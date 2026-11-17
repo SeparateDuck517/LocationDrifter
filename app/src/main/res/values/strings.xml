@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">定位漂移助手</string>
+    <string name="xposed_description">零三方应用侵入：仅在系统框架(android)与电话服务(com.android.phone)层主动注入GPS/卫星并隔离基站与Wi-Fi</string>
+</resources>
