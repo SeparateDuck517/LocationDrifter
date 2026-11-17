@@ -14,6 +14,7 @@ import android.location.Geocoder
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -102,9 +103,14 @@ class MainActivity : Activity() {
         val detail: String = ""
     )
 
+    private lateinit var tvSubtitleMode: TextView
     private lateinit var tvRootStatus: TextView
     private lateinit var tvXposedStatus: TextView
     private lateinit var tvRunStatus: TextView
+    private lateinit var cardDegradedBanner: LinearLayout
+    private lateinit var tvDegradedTitle: TextView
+    private lateinit var tvDegradedDesc: TextView
+    private lateinit var btnDegradedAction: TextView
     private lateinit var tvAddress: TextView
     private lateinit var tvCoords: TextView
     private lateinit var btnCopyCoord: TextView
@@ -124,7 +130,11 @@ class MainActivity : Activity() {
     private var currentWgsLat = 39.907418
     private var currentWgsLng = 116.391227
     private var currentAddress = "北京天安门"
+
     private var hasRoot = false
+    private var hasXposed = false
+    private var rootCheckCompleted = false
+    private var rootlessDefaultsApplied = false
     private var isEnabled = false
     private var suppressCheckboxCallback = false
 
@@ -154,15 +164,20 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        refreshXposedStatus()
+        updateEnvironmentUI()
         refreshRunStatusUI()
         refreshFavoritesCount()
     }
 
     private fun initViews() {
+        tvSubtitleMode = findViewById(R.id.tvSubtitleMode)
         tvRootStatus = findViewById(R.id.tvRootStatus)
         tvXposedStatus = findViewById(R.id.tvXposedStatus)
         tvRunStatus = findViewById(R.id.tvRunStatus)
+        cardDegradedBanner = findViewById(R.id.cardDegradedBanner)
+        tvDegradedTitle = findViewById(R.id.tvDegradedTitle)
+        tvDegradedDesc = findViewById(R.id.tvDegradedDesc)
+        btnDegradedAction = findViewById(R.id.btnDegradedAction)
         tvAddress = findViewById(R.id.tvAddress)
         tvCoords = findViewById(R.id.tvCoords)
         btnCopyCoord = findViewById(R.id.btnCopyCoord)
@@ -181,6 +196,26 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnInputCoord).setOnClickListener { showManualCoordDialog() }
         findViewById<Button>(R.id.btnAddFavorite).setOnClickListener { showAddFavoriteDialog() }
         btnFavorites.setOnClickListener { showFavoritesDialog() }
+
+        val degradedActionClick = View.OnClickListener {
+            if (!hasRoot && rootCheckCompleted) {
+                if (RootUtils.isMockLocationAllowed(this)) {
+                    showRootlessTipsDialog()
+                } else {
+                    showRootlessMockGuideDialog()
+                }
+            } else if (hasRoot && !hasXposed) {
+                showLsposedGuideDialog()
+            }
+        }
+        btnDegradedAction.setOnClickListener(degradedActionClick)
+        tvXposedStatus.setOnClickListener {
+            if (!hasRoot && rootCheckCompleted && !RootUtils.isMockLocationAllowed(this)) {
+                showRootlessMockGuideDialog()
+            } else if (hasRoot && !hasXposed) {
+                showLsposedGuideDialog()
+            }
+        }
 
         btnToggleDrift.setOnClickListener {
             if (isEnabled) {
@@ -249,7 +284,7 @@ class MainActivity : Activity() {
     }
 
     private fun checkEnvironmentStatus() {
-        refreshXposedStatus()
+        updateEnvironmentUI()
         RootUtils.runRootTask {
             val rootOk = RootUtils.isRootAvailable()
             if (rootOk) {
@@ -257,16 +292,168 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 hasRoot = rootOk
-                tvRootStatus.text = if (rootOk) "Root: 已授权" else "Root: 未授权"
-                tvRootStatus.setTextColor(if (rootOk) Color.parseColor("#059669") else Color.parseColor("#DC2626"))
+                rootCheckCompleted = true
+                updateEnvironmentUI()
             }
         }
     }
 
-    private fun refreshXposedStatus() {
-        val active = ModuleStatus.isModuleActive() || ConfigManager.isWorldReadableSupported(this)
-        tvXposedStatus.text = if (active) "LSPosed: 已激活" else "LSPosed: 未激活"
-        tvXposedStatus.setTextColor(if (active) Color.parseColor("#059669") else Color.parseColor("#DC2626"))
+    private fun updateEnvironmentUI() {
+        hasXposed = ModuleStatus.isModuleActive() || ConfigManager.isWorldReadableSupported(this)
+
+        if (!rootCheckCompleted) {
+            tvRootStatus.text = "Root: 检测中..."
+            tvRootStatus.setTextColor(Color.parseColor("#475569"))
+            tvXposedStatus.text = if (hasXposed) "LSPosed: 已激活" else "LSPosed: 检测中..."
+            tvXposedStatus.setTextColor(
+                if (hasXposed) Color.parseColor("#059669") else Color.parseColor("#475569")
+            )
+            return
+        }
+
+        if (hasRoot && hasXposed) {
+            // 完整模式：Root + LSPosed
+            tvSubtitleMode.text = "零三方应用注入架构 · 系统级防漂移"
+            tvRootStatus.text = "Root: 已授权"
+            tvRootStatus.setTextColor(Color.parseColor("#059669"))
+            tvXposedStatus.text = "LSPosed: 已激活"
+            tvXposedStatus.setTextColor(Color.parseColor("#059669"))
+            cardDegradedBanner.visibility = View.GONE
+
+            setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
+            setCheckboxState(cbAntiDrift, enabled = true, label = "防基站/WiFi漂移")
+            setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
+            setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
+        } else if (hasRoot && !hasXposed) {
+            // 仅 Root 模式（LSPosed 未激活）
+            tvSubtitleMode.text = "Root 已就绪 · 等待 LSPosed 模块激活"
+            tvRootStatus.text = "Root: 已授权"
+            tvRootStatus.setTextColor(Color.parseColor("#059669"))
+            tvXposedStatus.text = "LSPosed: 未激活 ↗"
+            tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+
+            cardDegradedBanner.visibility = View.VISIBLE
+            tvDegradedTitle.text = "已获取 Root，但 LSPosed 模块未激活"
+            tvDegradedDesc.text =
+                "当前仅可启用系统模拟定位与内核阻断，无法在系统层抹除 Mock 标记及隔离基站/Wi-Fi。请在 LSPosed 中启用本模块并勾选「系统框架」与「电话服务」后重启。"
+            btnDegradedAction.text = "激活步骤"
+
+            setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
+            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站/WiFi(需LSPosed)")
+            setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
+            setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
+        } else {
+            // 免 Root 降级兼容模式（无 Root / 无 Shizuku）
+            val mockAllowed = RootUtils.isMockLocationAllowed(this)
+            tvSubtitleMode.text = "免 Root 降级兼容模式 · 系统模拟定位 + RST-VPN"
+            tvRootStatus.text = "模式: 免Root降级兼容"
+            tvRootStatus.setTextColor(Color.parseColor("#D97706"))
+
+            if (mockAllowed) {
+                tvXposedStatus.text = "模拟定位: 已授权"
+                tvXposedStatus.setTextColor(Color.parseColor("#059669"))
+                btnDegradedAction.text = "防漂移建议"
+            } else {
+                tvXposedStatus.text = "模拟定位: 待设置 ↗"
+                tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
+                btnDegradedAction.text = "去授权模拟位置"
+            }
+
+            cardDegradedBanner.visibility = View.VISIBLE
+            tvDegradedTitle.text = "当前处于「免 Root 降级兼容模式」"
+            tvDegradedDesc.text =
+                "• 已适配：系统模拟定位 + 局部 RST-VPN 阻断（主动回发 TCP RST 加速回落 GPS）\n" +
+                    "• 降级限制：无法隐藏 isMock 标记，无法底层屏蔽周边 Wi-Fi/基站；部分强风控 App 可能检测或漂移"
+
+            setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
+            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站/WiFi(需LSPosed)")
+            setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
+            // 免 Root 模式下自动默认勾选 RST-VPN 作为网络定位防漂移替代方案
+            val autoEnableVpn = if (!rootlessDefaultsApplied && !isEnabled) {
+                rootlessDefaultsApplied = true
+                true
+            } else {
+                null
+            }
+            setCheckboxState(cbVpn, enabled = true, checked = autoEnableVpn, label = "VPN阻断(推荐)")
+        }
+    }
+
+    private fun setCheckboxState(
+        box: CheckBox,
+        enabled: Boolean,
+        checked: Boolean? = null,
+        label: String
+    ) {
+        suppressCheckboxCallback = true
+        box.isEnabled = enabled
+        box.alpha = if (enabled) 1.0f else 0.55f
+        if (checked != null) {
+            box.isChecked = checked
+        }
+        box.text = label
+        suppressCheckboxCallback = false
+    }
+
+    private fun openDeveloperOptions() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+        } catch (_: Throwable) {
+            try {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+                toast("请进入「关于手机」连续点击版本号开启开发者选项")
+            } catch (_: Throwable) {
+                toast("无法自动跳转设置页，请手动打开系统设置")
+            }
+        }
+    }
+
+    private fun showRootlessMockGuideDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("免 Root 模式需先授权模拟位置")
+            .setMessage(
+                "当前设备无 Root 权限，需在系统开发者选项中授权一次：\n\n" +
+                    "1. 若未开启「开发者选项」，请先打开系统「设置 → 关于手机」，连续点击「版本号」7 次。\n" +
+                    "2. 进入「设置 → 系统/其他设置 → 开发者选项」。\n" +
+                    "3. 找到「选择模拟位置信息应用」，选择「定位漂移助手」。\n" +
+                    "4. 返回本页面后，顶部状态变为「模拟定位: 已授权」即可一键开启。"
+            )
+            .setPositiveButton("前往开发者选项") { _, _ ->
+                openDeveloperOptions()
+            }
+            .setNegativeButton("稍后设置", null)
+            .show()
+    }
+
+    private fun showRootlessTipsDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("免 Root 降级模式优化建议")
+            .setMessage(
+                "你已完成模拟位置授权，当前模式工作机制与优化建议如下：\n\n" +
+                    "1. 建议保持勾选「系统GPS注入」与「VPN阻断(推荐)」：局部 VPN 仅拦截腾讯等网络定位域名并立即回发 TCP RST，不影响正常上网，可迫使定位 SDK 快速回落至虚拟 GPS。\n" +
+                    "2. 减少室内Wi-Fi漂移技巧：前往系统「设置 → 位置信息 → 位置服务（或定位精度）」，关闭「Wi-Fi 扫描」与「蓝牙扫描」，可显著减少免 Root 下的基站/Wi-Fi 辅助定位拉回。\n" +
+                    "3. 若目标 App 仍提示检测到模拟位置或出现漂移，则说明该应用强校验系统底层 isMock 标记或基站指纹，需在 Root + LSPosed 完整模式下使用。"
+            )
+            .setPositiveButton("打开系统位置设置") { _, _ ->
+                try {
+                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                } catch (_: Throwable) {
+                }
+            }
+            .setNegativeButton("知道了", null)
+            .show()
+    }
+
+    private fun showLsposedGuideDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("LSPosed 完整模式激活说明")
+            .setMessage(
+                "1. 打开 LSPosed 管理器 →「模块」→ 启用「定位漂移助手」。\n" +
+                    "2. 确保作用域已勾选「系统框架 (android)」与「电话服务 (com.android.phone)」，无需勾选任何第三方应用。\n" +
+                    "3. 重启一次手机（或执行软重启）使系统服务层 Hook 生效。"
+            )
+            .setPositiveButton("知道了", null)
+            .show()
     }
 
     private fun refreshFavoritesCount() {
@@ -293,66 +480,99 @@ class MainActivity : Activity() {
     }
 
     private fun startDrifting() {
+        // 免 Root 降级模式下启动前先校验系统模拟位置授权，避免静默失效
+        if (!hasRoot && cbSystemMock.isChecked && !RootUtils.isMockLocationAllowed(this)) {
+            showRootlessMockGuideDialog()
+            return
+        }
+        if (!cbSystemMock.isChecked && !cbVpn.isChecked && !cbIptables.isChecked && !cbAntiDrift.isChecked) {
+            toast("请至少启用一项定位或防漂移策略")
+            return
+        }
+
         isEnabled = true
         val cfg = buildCurrentConfig(enabled = true)
         ConfigManager.save(this, cfg, syncTmpWithRoot = false)
         val json = ConfigManager.toJson(cfg).toString()
 
-        RootUtils.runRootTask {
-            if (RootUtils.isRootAvailable()) {
-                RootUtils.grantMockAndLocationPermissions(packageName)
-                RootUtils.writeTmpConfigJson(json)
-                if (cfg.enableIptables) {
-                    RootUtils.enableIptablesBlock()
-                } else {
-                    RootUtils.disableIptablesBlock()
+        if (hasRoot) {
+            RootUtils.runRootTask {
+                if (RootUtils.isRootAvailable()) {
+                    RootUtils.grantMockAndLocationPermissions(packageName)
+                    RootUtils.writeTmpConfigJson(json)
+                    if (cfg.enableIptables) {
+                        RootUtils.enableIptablesBlock()
+                    } else {
+                        RootUtils.disableIptablesBlock()
+                    }
+                }
+                runOnUiThread {
+                    launchForegroundServices(cfg)
+                    refreshRunStatusUI()
+                    toast("已开启定位漂移")
                 }
             }
-            runOnUiThread {
-                if (cfg.enableSystemMock) {
-                    startMockLocationService()
-                }
-                if (cfg.enableVpn) {
-                    prepareAndStartVpn()
-                }
-                refreshRunStatusUI()
-                toast("已开启定位漂移")
-            }
+        } else {
+            launchForegroundServices(cfg)
+            refreshRunStatusUI()
+            toast("已开启定位漂移（免 Root 降级模式）")
+        }
+    }
+
+    private fun launchForegroundServices(cfg: ConfigManager.DriftConfig) {
+        if (cfg.enableSystemMock) {
+            startMockLocationService()
+        }
+        if (cfg.enableVpn) {
+            prepareAndStartVpn()
         }
     }
 
     private fun applyUpdatedCoordinates(showToast: Boolean = true) {
+        if (!hasRoot && cbSystemMock.isChecked && !RootUtils.isMockLocationAllowed(this)) {
+            showRootlessMockGuideDialog()
+            return
+        }
+
         val cfg = buildCurrentConfig(enabled = true)
         ConfigManager.save(this, cfg, syncTmpWithRoot = false)
         val json = ConfigManager.toJson(cfg).toString()
 
-        RootUtils.runRootTask {
-            if (RootUtils.isRootAvailable()) {
-                RootUtils.writeTmpConfigJson(json)
-                if (cfg.enableIptables) {
-                    RootUtils.enableIptablesBlock()
-                } else {
-                    RootUtils.disableIptablesBlock()
-                }
-            }
-            runOnUiThread {
-                if (cfg.enableSystemMock) {
-                    val intent = Intent(this, MockLocationService::class.java).apply {
-                        action = MockLocationService.ACTION_UPDATE
+        if (hasRoot) {
+            RootUtils.runRootTask {
+                if (RootUtils.isRootAvailable()) {
+                    RootUtils.writeTmpConfigJson(json)
+                    if (cfg.enableIptables) {
+                        RootUtils.enableIptablesBlock()
+                    } else {
+                        RootUtils.disableIptablesBlock()
                     }
-                    startForegroundService(intent)
-                } else {
-                    stopService(Intent(this, MockLocationService::class.java))
                 }
-                if (cfg.enableVpn && !DriftVpnService.isRunning) {
-                    prepareAndStartVpn()
-                } else if (!cfg.enableVpn && DriftVpnService.isRunning) {
-                    stopVpnService()
-                }
-                if (showToast) {
-                    toast("已实时更新漂移坐标")
+                runOnUiThread {
+                    syncActiveServices(cfg, showToast)
                 }
             }
+        } else {
+            syncActiveServices(cfg, showToast)
+        }
+    }
+
+    private fun syncActiveServices(cfg: ConfigManager.DriftConfig, showToast: Boolean) {
+        if (cfg.enableSystemMock) {
+            val intent = Intent(this, MockLocationService::class.java).apply {
+                action = MockLocationService.ACTION_UPDATE
+            }
+            startForegroundService(intent)
+        } else {
+            stopService(Intent(this, MockLocationService::class.java))
+        }
+        if (cfg.enableVpn && !DriftVpnService.isRunning) {
+            prepareAndStartVpn()
+        } else if (!cfg.enableVpn && DriftVpnService.isRunning) {
+            stopVpnService()
+        }
+        if (showToast) {
+            toast("已实时更新漂移坐标")
         }
     }
 
@@ -365,10 +585,12 @@ class MainActivity : Activity() {
         stopService(Intent(this, MockLocationService::class.java))
         stopVpnService()
 
-        RootUtils.runRootTask {
-            if (RootUtils.isRootAvailable()) {
-                RootUtils.writeTmpConfigJson(json)
-                RootUtils.disableIptablesBlock()
+        if (hasRoot) {
+            RootUtils.runRootTask {
+                if (RootUtils.isRootAvailable()) {
+                    RootUtils.writeTmpConfigJson(json)
+                    RootUtils.disableIptablesBlock()
+                }
             }
         }
 
@@ -440,8 +662,8 @@ class MainActivity : Activity() {
             gcjLng = currentGcjLng,
             address = currentAddress,
             enableSystemMock = cbSystemMock.isChecked,
-            blockNetworkDrift = cbAntiDrift.isChecked,
-            enableIptables = cbIptables.isChecked,
+            blockNetworkDrift = cbAntiDrift.isChecked && hasXposed,
+            enableIptables = cbIptables.isChecked && hasRoot,
             enableVpn = cbVpn.isChecked,
             enableJitter = true,
             updatedAt = System.currentTimeMillis()
@@ -487,7 +709,7 @@ class MainActivity : Activity() {
 
     private fun refreshRunStatusUI() {
         if (isEnabled) {
-            tvRunStatus.text = "● 漂移生效中"
+            tvRunStatus.text = if (hasRoot) "● 漂移生效中" else "● 降级运行中"
             tvRunStatus.setTextColor(Color.parseColor("#059669"))
             btnToggleDrift.text = "一键停止漂移"
             btnToggleDrift.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#DC2626"))

@@ -1,5 +1,9 @@
 package com.separ.locationdrifter.util
 
+import android.app.AppOpsManager
+import android.content.Context
+import android.os.Build
+import android.os.Process
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.Inet4Address
@@ -8,7 +12,7 @@ import java.net.InetAddress
 import java.util.concurrent.Executors
 
 /**
- * Root (su) 命令执行与环境自动化辅助工具
+ * Root (su) 命令执行与环境权限检测工具
  * 所有异步 Root 任务统一通过单线程队列串行调度，消除并发 su 进程竞争。
  */
 object RootUtils {
@@ -27,6 +31,32 @@ object RootUtils {
 
     fun isRootAvailable(): Boolean {
         return execSu("id").let { it.success && it.stdout.contains("uid=0") }
+    }
+
+    /**
+     * 免 Root 环境下检测当前应用是否已在「开发者选项 -> 选择模拟位置信息应用」中被授权
+     */
+    fun isMockLocationAllowed(context: Context): Boolean {
+        return try {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_MOCK_LOCATION,
+                    Process.myUid(),
+                    context.packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_MOCK_LOCATION,
+                    Process.myUid(),
+                    context.packageName
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     fun execSu(command: String): CommandResult {
