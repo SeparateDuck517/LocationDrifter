@@ -128,16 +128,40 @@ object RootUtils {
         "datalbs.map.qq.com"
     )
 
+    // 微信与腾讯基础通讯域名：避免三层 IP 拦截与腾讯共享 Anycast VIP 冲突导致微信断网
+    val PROTECTED_TENCENT_HOSTS = listOf(
+        "szshort.weixin.qq.com",
+        "szlong.weixin.qq.com",
+        "short.weixin.qq.com",
+        "long.weixin.qq.com",
+        "dns.weixin.qq.com",
+        "mp.weixin.qq.com",
+        "wx.qq.com",
+        "res.wx.qq.com"
+    )
+
     fun enableIptablesBlock(): Boolean {
+        val protectedIps = HashSet<String>()
+        for (host in PROTECTED_TENCENT_HOSTS) {
+            try {
+                InetAddress.getAllByName(host).forEach { addr ->
+                    addr.hostAddress?.substringBefore('%')?.let { protectedIps.add(it) }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
         val ipv4s = LinkedHashSet<String>()
         val ipv6s = LinkedHashSet<String>()
         repeat(2) {
             for (host in LBS_HOSTS) {
                 try {
                     InetAddress.getAllByName(host).forEach { addr ->
+                        val rawIp = addr.hostAddress?.substringBefore('%') ?: return@forEach
+                        if (rawIp in protectedIps) return@forEach
                         when (addr) {
-                            is Inet4Address -> addr.hostAddress?.let { ipv4s.add(it) }
-                            is Inet6Address -> addr.hostAddress?.substringBefore('%')?.let { ipv6s.add(it) }
+                            is Inet4Address -> ipv4s.add(rawIp)
+                            is Inet6Address -> ipv6s.add(rawIp)
                         }
                     }
                 } catch (_: Throwable) {

@@ -1,7 +1,9 @@
 package com.separ.locationdrifter.service
 
+import android.app.Service
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import com.separ.locationdrifter.util.RootUtils
 import java.io.FileInputStream
@@ -12,15 +14,26 @@ import java.net.InetAddress
 
 /**
  * 免 Root / 免 CA 证书的局部主动拒止 VPN 防漂移通道（IPv4 + IPv6 双栈）：
- * 1) 仅对目标网络定位域名 IP 添加精准主机路由 (/32 与 /128)，绝不接管 0.0.0.0/0 或 ::/0 正常上网流量。
- * 2) 收到发往定位服务器的 TCP/UDP 数据包时，在用户态直接向 TUN 接口回发 TCP RST / ICMP Port Unreachable，
- *    还原内核 iptables -j REJECT 的毫秒级拒止体验，避免定位 SDK 等待数秒超时才回落到 GPS。
+ * 1) 仅对目标网络定位域名 IP 添加精准主机路由 (/32 与 /128)，绝不接管 0.0.0.0/0 或 ::/0 正常上网流量；
+ * 2) 自动剔除与微信等高频通讯服务共享的腾讯 Anycast/CDN 边缘 IP，并将微信等通讯应用加入 VPN 绕行白名单，
+ *    避免三层 IP 级 TCP RST 误伤微信 mmtls 连接导致「网络不可用」；
+ * 3) 收到发往定位服务器的 TCP/UDP 数据包时，在用户态直接向 TUN 接口回发 TCP RST / ICMP Port Unreachable，
+ *    还原内核 iptables -j REJECT 的毫秒级拒止体验。
  */
 class DriftVpnService : VpnService() {
 
     companion object {
         const val ACTION_START = "com.separ.locationdrifter.action.START_VPN"
         const val ACTION_STOP = "com.separ.locationdrifter.action.STOP_VPN"
+
+        // 避免局部 RST-VPN 误伤即时通讯与系统基础服务连接
+        private val BYPASS_VPN_PACKAGES = listOf(
+            "com.tencent.mm",
+            "com.tencent.mobileqq",
+            "com.tencent.wework",
+            "com.android.vending",
+            "com.google.android.gms"
+        )
 
         @Volatile
         var isRunning: Boolean = false
@@ -36,28 +49,53 @@ class DriftVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startVpn()
+
+        if (!isRunning) {
+            startVpnAsync()
+        }
         return START_STICKY
     }
 
-    private fun startVpn() {
-        if (isRunning) return
+    private fun startVpnAsync() {
         isRunning = true
-
         Thread {
             try {
-                val ipv4s = LinkedHashSet<String>()
-                val ipv6s = LinkedHashSet<String>()
-                for (host in RootUtils.LBS_HOSTS) {
+                // 先解析微信核心通讯域名 IP，防止与腾讯地图 LBS 域名共享同一腾讯 BGP/CDN 节点时被误杀
+                val protectedIps = HashSet<String>()
+                for (host in RootUtils.PROTECTED_TENCENT_HOSTS) {
                     try {
                         InetAddress.getAllByName(host).forEach { addr ->
-                            when (addr) {
-                                is Inet4Address -> addr.hostAddress?.let { ipv4s.add(it) }
-                                is Inet6Address -> addr.hostAddress?.substringBefore('%')?.let { ipv6s.add(it) }
-                            }
+                            addr.hostAddress?.substringBefore('%')?.let { protectedIps.add(it) }
                         }
                     } catch (_: Throwable) {
                     }
+                }
+
+                val ipv4s = LinkedHashSet<String>()
+                val ipv6s = LinkedHashSet<String>()
+                repeat(2) {
+                    for (host in RootUtils.LBS_HOSTS) {
+                        try {
+                            InetAddress.getAllByName(host).forEach { addr ->
+                                val rawIp = addr.hostAddress?.substringBefore('%') ?: return@forEach
+                                if (rawIp in protectedIps) return@forEach
+                                when (addr) {
+                                    is Inet4Address -> ipv4s.add(rawIp)
+                                    is Inet6Address -> ipv6s.add(rawIp)
+                                }
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+
+                if (!isRunning) return@Thread
+
+                // 若当前运营商 DNS 下所有 LBS IP 均与微信核心 VIP 重叠，则跳过建立空路由 TUN，避免影响正常网络
+                if (ipv4s.isEmpty() && ipv6s.isEmpty()) {
+                    isRunning = false
+                    stopSelf()
+                    return@Thread
                 }
 
                 val builder = Builder()
@@ -66,35 +104,37 @@ class DriftVpnService : VpnService() {
                     .addAddress("10.233.233.1", 32)
                     .addAddress("fd00:233:233::1", 128)
 
-                if (ipv4s.isEmpty() && ipv6s.isEmpty()) {
-                    // 仅添加占位路由，绝不劫持默认路由造成断网
-                    builder.addRoute("10.233.233.2", 32)
-                } else {
-                    for (ip in ipv4s) {
-                        try {
-                            builder.addRoute(ip, 32)
-                        } catch (_: Throwable) {
-                        }
-                    }
-                    for (ip6 in ipv6s) {
-                        try {
-                            builder.addRoute(ip6, 128)
-                        } catch (_: Throwable) {
-                        }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    builder.setMetered(false)
+                }
+
+                for (pkg in BYPASS_VPN_PACKAGES) {
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                    } catch (_: Throwable) {
                     }
                 }
 
-                // 放行自身（避免本地地图搜索/DNS受影响），对其余全部应用生效
-                try {
-                    builder.addDisallowedApplication(packageName)
-                } catch (_: Throwable) {
+                for (ip in ipv4s) {
+                    try {
+                        builder.addRoute(ip, 32)
+                    } catch (_: Throwable) {
+                    }
+                }
+                for (ip in ipv6s) {
+                    try {
+                        builder.addRoute(ip, 128)
+                    } catch (_: Throwable) {
+                    }
                 }
 
-                vpnInterface = builder.establish()
-                val fd = vpnInterface?.fileDescriptor ?: run {
+                val fd = builder.establish()
+                if (fd == null) {
                     isRunning = false
+                    stopSelf()
                     return@Thread
                 }
+                vpnInterface = fd
 
                 drainThread = Thread {
                     val buf = ByteArray(32767)
@@ -117,7 +157,11 @@ class DriftVpnService : VpnService() {
                         }
                     } catch (_: Throwable) {
                     }
-                }.apply { start() }
+                }.apply {
+                    name = "LocationDrifter-VpnRstResponder"
+                    isDaemon = true
+                    start()
+                }
             } catch (_: Throwable) {
                 isRunning = false
                 stopSelf()
