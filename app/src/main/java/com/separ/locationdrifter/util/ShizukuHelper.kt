@@ -19,8 +19,8 @@ import java.util.concurrent.Executors
  * 免 Root Shizuku (UID 2000 ADB Shell) 特权通道辅助工具：
  * 1) 通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION，并辅以多格式 appops 命令兜底；
  * 2) 漂移期间自动临时关闭系统后台 Wi-Fi / 蓝牙扫描减少坐标回弹，停止漂移后自动还原；
- * 3) 动态隔离目标应用（默认微信 com.tencent.mm）的 Wi-Fi 扫描、蓝牙扫描与基站/网络粗略定位 AppOps 感知权限，
- *    迫使其采信 GPS 定位通道，停止漂移时按备份精确恢复原权限状态。
+ * 3) 动态隔离目标应用（默认微信 com.tencent.mm）的 Wi-Fi 扫描与蓝牙扫描 AppOps 感知权限（保留精细与粗略 GPS 定位权限），
+ *    停止漂移时按备份精确恢复原权限状态。
  */
 object ShizukuHelper {
 
@@ -50,10 +50,10 @@ object ShizukuHelper {
         TargetAppPreset("com.alibaba.android.rimet", "钉钉")
     )
 
+    // 仅隔离 Wi-Fi 与蓝牙硬件扫描，绝不禁用 coarse_location（否则会导致 SDK 判定定位权限被拒而彻底丢失 GPS 通道）
     private val TARGET_ISOLATED_OPS = listOf(
         "android:wifi_scan",
-        "android:bluetooth_scan",
-        "android:coarse_location"
+        "android:bluetooth_scan"
     )
 
     private val shizukuExecutor = Executors.newSingleThreadExecutor()
@@ -245,9 +245,6 @@ object ShizukuHelper {
         return RootUtils.isMockLocationAllowed(context)
     }
 
-    /**
-     * 获取当前配置的硬件感知隔离目标应用包名列表（默认包含微信 com.tencent.mm）
-     */
     fun getTargetApps(context: Context): List<String> {
         val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
         val raw = prefs.getString(KEY_TARGET_PACKAGES, null) ?: return listOf(DEFAULT_WECHAT_PACKAGE)
@@ -304,10 +301,6 @@ object ShizukuHelper {
         }
     }
 
-    /**
-     * 方案二核心：通过 Shizuku (UID 2000) 临时撤销目标应用的 Wi-Fi 扫描、蓝牙扫描及基站/网络粗略定位感知权限，
-     * 保留其精细 GPS 权限，迫使目标应用（如微信）读取系统虚拟 GPS 坐标。
-     */
     fun applyTargetAppLocationIsolation(
         context: Context,
         packages: List<String> = getTargetApps(context)
@@ -353,9 +346,6 @@ object ShizukuHelper {
         return isolatedCount
     }
 
-    /**
-     * 停止漂移或取消勾选时，按备份精确恢复目标应用的原始 AppOps 权限状态
-     */
     fun restoreTargetAppLocationIsolation(context: Context): Boolean {
         val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
         val rawMap = prefs.getString(KEY_APPOPS_BACKUP_MAP, null)
@@ -430,9 +420,6 @@ object ShizukuHelper {
         return execShizuku(cmd).success
     }
 
-    /**
-     * 统一恢复全部 Shizuku 临时修改（系统后台扫描 + 目标应用 AppOps 感知权限）
-     */
     fun restoreAllAntiDriftStates(context: Context) {
         restoreAntiDriftScanSuppression(context)
         restoreTargetAppLocationIsolation(context)

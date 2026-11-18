@@ -10,6 +10,8 @@ import android.net.wifi.WifiInfo
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
+import android.os.IInterface
 import android.os.Parcel
 import android.os.Process
 import android.os.SystemClock
@@ -29,6 +31,7 @@ import java.io.File
 import java.lang.reflect.Field
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /**
@@ -43,6 +46,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
         private const val PROBE_PROVIDER = "location_drifter_probe"
         private const val CACHE_TTL_MS = 600L
         private const val JITTER_STEP_MS = 1000L
+        private const val FEED_INTERVAL_MS = 900L
         private const val FIRST_APPLICATION_UID = 10000
         private const val HAS_MOCK_PROVIDER_MASK = 1 shl 4
 
@@ -61,6 +65,11 @@ class LocationHookEntry : IXposedHookLoadPackage {
         val wgsLng: Double = 116.391227,
         val blockNetworkDrift: Boolean = true,
         val enableJitter: Boolean = true
+    )
+
+    private data class TrackedListener(
+        val listener: Any,
+        val provider: String
     )
 
     @Volatile
@@ -84,6 +93,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
     @Volatile
     private var cachedContext: Context? = null
 
+    private val wifiApexHooked = AtomicBoolean(false)
+    private val feederStarted = AtomicBoolean(false)
+    private val activeListeners = ConcurrentHashMap<IBinder, TrackedListener>()
     private val uidBypassCache = ConcurrentHashMap<Int, Boolean>()
     private val uidModuleSelfCache = ConcurrentHashMap<Int, Boolean>()
 
@@ -92,6 +104,18 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
     private val locIsFromMockField: Field? by lazy {
         XposedHelpers.findFieldIfExists(Location::class.java, "mIsFromMockProvider")
+    }
+    private val wifiBssidField: Field? by lazy {
+        XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mBSSID")
+    }
+    private val wifiMacField: Field? by lazy {
+        XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mMacAddress")
+    }
+    private val wifiApMldMacField: Field? by lazy {
+        XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mApMldMacAddress")
+    }
+    private val wifiSsidField: Field? by lazy {
+        XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mWifiSsid")
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -116,14 +140,16 @@ class LocationHookEntry : IXposedHookLoadPackage {
                 hookSystemLocationServices(lpparam.classLoader)
                 hookGnssManagerService(lpparam.classLoader)
                 hookWifiInfoSerialization()
-                hookParceledListSlice()
+                hookParceledListSlice(ClassLoader.getSystemClassLoader())
                 hookWifiServiceInSystemServer(lpparam.classLoader)
+                hookWifiMainlineApexLoader(lpparam.classLoader)
                 hookTelephonyRegistryInSystemServer(lpparam.classLoader)
                 hookNetworkRegistrationInfo(lpparam.classLoader)
+                startSystemGpsFeederLoop()
                 markSystemServerHookedAsync()
             }
             "com.android.phone" -> {
-                hookParceledListSlice()
+                hookParceledListSlice(ClassLoader.getSystemClassLoader())
                 hookPhoneInterfaceManager(lpparam.classLoader)
                 hookNetworkRegistrationInfo(lpparam.classLoader)
             }
@@ -134,9 +160,132 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
 
     /**
-     * 在 system_server 启动并加载本模块后，将当前 BOOT_COUNT 写入 Settings.Global（兼容 BOOT_COUNT == 0），
-     * 同时配合 LocationManagerService 实时探针供前端精准检测 system_server Hook 状态。
+     * Android 11–16 独立 Wi-Fi Mainline APEX (service-wifi.jar) 使用独立的 PathClassLoader，
+     * 通过拦截 SystemServiceManager.startService 与 ClassLoader.loadClass 捕获其真实类加载器并挂载隔离钩子。
      */
+    private fun hookWifiMainlineApexLoader(systemClassLoader: ClassLoader) {
+        try {
+            val ssmCls = XposedHelpers.findClassIfExists(
+                "com.android.server.SystemServiceManager",
+                systemClassLoader
+            )
+            if (ssmCls != null) {
+                XposedBridge.hookAllMethods(
+                    ssmCls,
+                    "startService",
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            val service = param.result ?: return
+                            val name = service.javaClass.name
+                            if (name.contains("wifi", ignoreCase = true)) {
+                                service.javaClass.classLoader?.let { cl ->
+                                    installWifiApexHooksOnce(cl)
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        } catch (t: Throwable) {
+            XposedBridge.log("$TAG hookSystemServiceManager error: ${t.message}")
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                ClassLoader::class.java,
+                "loadClass",
+                String::class.java,
+                Boolean::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (wifiApexHooked.get()) return
+                        val name = param.args.firstOrNull() as? String ?: return
+                        if (name == "com.android.server.wifi.WifiServiceImpl") {
+                            val cls = param.result as? Class<*> ?: return
+                            cls.classLoader?.let { cl ->
+                                installWifiApexHooksOnce(cl)
+                            }
+                        }
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            XposedBridge.log("$TAG hookClassLoader(WifiServiceImpl) error: ${t.message}")
+        }
+    }
+
+    private fun installWifiApexHooksOnce(wifiClassLoader: ClassLoader) {
+        if (!wifiApexHooked.compareAndSet(false, true)) return
+        XposedBridge.log("$TAG hooked Wi-Fi APEX ClassLoader: $wifiClassLoader")
+        hookParceledListSlice(wifiClassLoader)
+        hookWifiServiceInSystemServer(wifiClassLoader)
+    }
+
+    /**
+     * 在 system_server 内持续向已注册的三方定位监听器推送虚拟 GPS 坐标（1Hz 心跳），
+     * 解决室内无真实卫星信号时仅首帧触发回调、后续无连续位置流的问题。
+     */
+    private fun startSystemGpsFeederLoop() {
+        if (!feederStarted.compareAndSet(false, true)) return
+        Thread {
+            while (true) {
+                try {
+                    Thread.sleep(FEED_INTERVAL_MS)
+                    val cfg = getConfig()
+                    if (!cfg.enabled || activeListeners.isEmpty()) continue
+
+                    val iterator = activeListeners.entries.iterator()
+                    while (iterator.hasNext()) {
+                        val entry = iterator.next()
+                        val binder = entry.key
+                        if (!binder.isBinderAlive) {
+                            iterator.remove()
+                            continue
+                        }
+                        val tracked = entry.value
+                        val fakeLoc = buildFakeLocation(tracked.provider, cfg)
+                        val token = Binder.clearCallingIdentity()
+                        try {
+                            try {
+                                XposedHelpers.callMethod(
+                                    tracked.listener,
+                                    "onLocationChanged",
+                                    Collections.singletonList(fakeLoc),
+                                    null
+                                )
+                            } catch (_: Throwable) {
+                                XposedHelpers.callMethod(tracked.listener, "onLocationChanged", fakeLoc)
+                            }
+                        } catch (_: Throwable) {
+                            iterator.remove()
+                        } finally {
+                            Binder.restoreCallingIdentity(token)
+                        }
+                    }
+                } catch (_: InterruptedException) {
+                    return@Thread
+                } catch (_: Throwable) {
+                }
+            }
+        }.apply {
+            name = "LocationDrifter-SystemGpsFeeder"
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun extractListenerBinder(listener: Any): IBinder? {
+        return try {
+            if (listener is IInterface) {
+                listener.asBinder()
+            } else {
+                XposedHelpers.callMethod(listener, "asBinder") as? IBinder
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun markSystemServerHookedAsync() {
         Thread {
             for (attempt in 0 until 45) {
@@ -502,6 +651,30 @@ class LocationHookEntry : IXposedHookLoadPackage {
 
             XposedBridge.hookAllMethods(
                 lrCls,
+                "create",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val cfg = getConfig()
+                        if (!cfg.enabled) return
+                        patchResultObj(param.result, cfg)
+                    }
+                }
+            )
+
+            XposedBridge.hookAllMethods(
+                lrCls,
+                "wrap",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val cfg = getConfig()
+                        if (!cfg.enabled) return
+                        patchResultObj(param.result, cfg)
+                    }
+                }
+            )
+
+            XposedBridge.hookAllMethods(
+                lrCls,
                 "writeToParcel",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
@@ -602,14 +775,19 @@ class LocationHookEntry : IXposedHookLoadPackage {
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             if (!shouldSpoofLocationCaller()) return
-                            val cfg = getConfig()
-                            if (!cfg.enabled) return
                             val listener = param.args.firstOrNull { arg ->
                                 arg != null && (arg.javaClass.name.contains("ILocationListener") ||
                                     arg.javaClass.interfaces.any { it.name == "android.location.ILocationListener" })
                             } ?: return
                             val provider = (param.args.firstOrNull { it is String } as? String)
                                 ?: LocationManager.GPS_PROVIDER
+
+                            extractListenerBinder(listener)?.let { binder ->
+                                activeListeners[binder] = TrackedListener(listener, provider)
+                            }
+
+                            val cfg = getConfig()
+                            if (!cfg.enabled) return
                             val fakeLoc = buildFakeLocation(provider, cfg)
                             val token = Binder.clearCallingIdentity()
                             try {
@@ -626,6 +804,22 @@ class LocationHookEntry : IXposedHookLoadPackage {
                                 }
                             } finally {
                                 Binder.restoreCallingIdentity(token)
+                            }
+                        }
+                    }
+                )
+
+                XposedBridge.hookAllMethods(
+                    cls,
+                    "unregisterLocationListener",
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            val listener = param.args.firstOrNull { arg ->
+                                arg != null && (arg.javaClass.name.contains("ILocationListener") ||
+                                    arg.javaClass.interfaces.any { it.name == "android.location.ILocationListener" })
+                            } ?: return
+                            extractListenerBinder(listener)?.let { binder ->
+                                activeListeners.remove(binder)
                             }
                         }
                     }
@@ -654,7 +848,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
                     }
                 )
 
-                // 实时 system_server 存活探针 + Provider 可用性兜底
                 XposedBridge.hookAllMethods(
                     cls,
                     "isProviderEnabledForUser",
@@ -821,13 +1014,12 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    private fun hookParceledListSlice() {
+    private fun hookParceledListSlice(cl: ClassLoader) {
         val sliceClassNames = listOf(
             "android.content.pm.ParceledListSlice",
             "com.android.wifi.x.com.android.modules.utils.ParceledListSlice",
             "com.android.wifi.x.com.android.modules.utils.BaseParceledListSlice"
         )
-        val cl = ClassLoader.getSystemClassLoader()
         for (clsName in sliceClassNames) {
             try {
                 val plsCls = XposedHelpers.findClassIfExists(clsName, cl) ?: continue
@@ -874,12 +1066,18 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
+    private fun sanitizeWifiInfoInPlace(info: Any) {
+        try {
+            wifiBssidField?.set(info, "02:00:00:00:00:00")
+            wifiMacField?.set(info, "02:00:00:00:00:00")
+            wifiApMldMacField?.set(info, null)
+            wifiSsidField?.set(info, null)
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun hookWifiInfoSerialization() {
         try {
-            val bssidField: Field? = XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mBSSID")
-            val macField: Field? = XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mMacAddress")
-            val apMldMacField: Field? = XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mApMldMacAddress")
-
             XposedHelpers.findAndHookMethod(
                 WifiInfo::class.java,
                 "writeToParcel",
@@ -893,17 +1091,21 @@ class LocationHookEntry : IXposedHookLoadPackage {
 
                         val info = param.thisObject ?: return
                         try {
-                            if (bssidField != null) {
-                                param.setObjectExtra("origBssid", bssidField.get(info))
-                                bssidField.set(info, "02:00:00:00:00:00")
+                            wifiBssidField?.let { f ->
+                                param.setObjectExtra("origBssid", f.get(info))
+                                f.set(info, "02:00:00:00:00:00")
                             }
-                            if (macField != null) {
-                                param.setObjectExtra("origMac", macField.get(info))
-                                macField.set(info, "02:00:00:00:00:00")
+                            wifiMacField?.let { f ->
+                                param.setObjectExtra("origMac", f.get(info))
+                                f.set(info, "02:00:00:00:00:00")
                             }
-                            if (apMldMacField != null) {
-                                param.setObjectExtra("origApMldMac", apMldMacField.get(info))
-                                apMldMacField.set(info, null)
+                            wifiApMldMacField?.let { f ->
+                                param.setObjectExtra("origApMldMac", f.get(info))
+                                f.set(info, null)
+                            }
+                            wifiSsidField?.let { f ->
+                                param.setObjectExtra("origWifiSsid", f.get(info))
+                                f.set(info, null)
                             }
                         } catch (_: Throwable) {
                         }
@@ -913,17 +1115,13 @@ class LocationHookEntry : IXposedHookLoadPackage {
                         val info = param.thisObject ?: return
                         try {
                             val origBssid = param.getObjectExtra("origBssid")
-                            if (origBssid != null && bssidField != null) {
-                                bssidField.set(info, origBssid)
-                            }
+                            if (origBssid != null) wifiBssidField?.set(info, origBssid)
                             val origMac = param.getObjectExtra("origMac")
-                            if (origMac != null && macField != null) {
-                                macField.set(info, origMac)
-                            }
+                            if (origMac != null) wifiMacField?.set(info, origMac)
                             val origApMldMac = param.getObjectExtra("origApMldMac")
-                            if (origApMldMac != null && apMldMacField != null) {
-                                apMldMacField.set(info, origApMldMac)
-                            }
+                            if (origApMldMac != null) wifiApMldMacField?.set(info, origApMldMac)
+                            val origWifiSsid = param.getObjectExtra("origWifiSsid")
+                            if (origWifiSsid != null) wifiSsidField?.set(info, origWifiSsid)
                         } catch (_: Throwable) {
                         }
                     }
@@ -960,6 +1158,20 @@ class LocationHookEntry : IXposedHookLoadPackage {
                             } catch (_: Throwable) {
                             }
                         }
+                    }
+                }
+            )
+
+            XposedBridge.hookAllMethods(
+                wifiServiceCls,
+                "getConnectionInfo",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (!shouldIsolateCaller()) return
+                        val cfg = getConfig()
+                        if (!cfg.enabled || !cfg.blockNetworkDrift) return
+                        val info = param.result ?: return
+                        sanitizeWifiInfoInPlace(info)
                     }
                 }
             )
@@ -1004,6 +1216,34 @@ class LocationHookEntry : IXposedHookLoadPackage {
             }
             XposedBridge.hookAllMethods(regCls, "notifyCellLocation", cellLocHook)
             XposedBridge.hookAllMethods(regCls, "notifyCellLocationForSubscriber", cellLocHook)
+
+            XposedBridge.hookAllMethods(
+                regCls,
+                "getAllCellInfo",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (!shouldIsolateCaller()) return
+                        val cfg = getConfig()
+                        if (cfg.enabled && cfg.blockNetworkDrift) {
+                            param.result = ArrayList<CellInfo>()
+                        }
+                    }
+                }
+            )
+
+            XposedBridge.hookAllMethods(
+                regCls,
+                "getCellLocation",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (!shouldIsolateCaller()) return
+                        val cfg = getConfig()
+                        if (cfg.enabled && cfg.blockNetworkDrift) {
+                            param.result = null
+                        }
+                    }
+                }
+            )
         } catch (t: Throwable) {
             XposedBridge.log("$TAG hookTelephonyRegistryInSystemServer error: ${t.message}")
         }
@@ -1036,6 +1276,23 @@ class LocationHookEntry : IXposedHookLoadPackage {
             )
 
             if (cellIdentityField != null) {
+                XposedBridge.hookAllMethods(
+                    nriCls,
+                    "sanitizeLocationInfo",
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            if (!shouldIsolateCaller()) return
+                            val cfg = getConfig()
+                            if (!cfg.enabled || !cfg.blockNetworkDrift) return
+                            val sanitized = param.result ?: return
+                            try {
+                                cellIdentityField.set(sanitized, null)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                )
+
                 XposedHelpers.findAndHookMethod(
                     nriCls,
                     "writeToParcel",
@@ -1153,7 +1410,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
             latitude = jitteredLat(cfg)
             longitude = jitteredLng(cfg)
             altitude = 36.0
-            accuracy = 3.5f
+            accuracy = 3.2f
             speed = 0.08f
             bearing = 15.0f
             time = System.currentTimeMillis()
@@ -1178,7 +1435,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
             loc.time = System.currentTimeMillis()
             loc.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             if (loc.accuracy <= 0f || loc.accuracy > 20f) {
-                loc.accuracy = 3.5f
+                loc.accuracy = 3.2f
             }
             if (!loc.hasAltitude()) {
                 loc.altitude = 36.0
