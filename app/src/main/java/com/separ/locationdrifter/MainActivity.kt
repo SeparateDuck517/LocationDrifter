@@ -857,7 +857,7 @@ class MainActivity : Activity() {
                 text = cons
                 setTextColor(Color.parseColor("#64748B"))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                setLineSpacing(dp(1.5f).toFloat(), 1f)
+                setLineSpacing(dp(2).toFloat(), 1f)
                 setPadding(dp(20), dp(3), 0, 0)
             }
             card.addView(tvCons)
