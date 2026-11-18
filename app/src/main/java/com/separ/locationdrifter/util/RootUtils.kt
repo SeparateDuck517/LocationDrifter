@@ -3,7 +3,6 @@ package com.separ.locationdrifter.util
 import android.app.AppOpsManager
 import android.content.Context
 import android.os.Build
-import android.os.Process
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.Inet4Address
@@ -40,17 +39,18 @@ object RootUtils {
     fun isMockLocationAllowed(context: Context): Boolean {
         return try {
             val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val uid = android.os.Process.myUid()
             val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 appOps.unsafeCheckOpNoThrow(
                     OPSTR_MOCK_LOCATION,
-                    Process.myUid(),
+                    uid,
                     context.packageName
                 )
             } else {
                 @Suppress("DEPRECATION")
                 appOps.checkOpNoThrow(
                     OPSTR_MOCK_LOCATION,
-                    Process.myUid(),
+                    uid,
                     context.packageName
                 )
             }
