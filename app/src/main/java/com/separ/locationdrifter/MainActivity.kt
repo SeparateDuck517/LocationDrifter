@@ -392,7 +392,7 @@ class MainActivity : Activity() {
             if (!v.isEnabled && event.action == MotionEvent.ACTION_UP) {
                 val reason = when {
                     v.id == R.id.cbIptables ->
-                        "「内核阻断」需要 Root 权限，当前模式下请使用「VPN阻断(推荐)」替代"
+                        "「内核阻断」需要 Root 权限，当前模式下请使用「系统GPS注入」即可"
                     selectedMode == WorkMode.ROOT_LSPOSED && hasXposed && !hasSystemHookActive ->
                         "LSPosed 模块已激活，需先重启手机加载系统 Hook 后才可开启「防基站/WiFi漂移」"
                     else ->
@@ -474,13 +474,15 @@ class MainActivity : Activity() {
                     checked = shizukuAutoSuppressScan,
                     label = "自动关扫描(Shizuku)"
                 )
-                setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
+                // 默认不开启局部 VPN，避免干扰微信/高德等正常网络连接；仅在特定定位 SDK 漂移时按需手动开启
+                setCheckboxState(cbVpn, enabled = true, checked = false, label = "VPN阻断(可选)")
             }
             WorkMode.ROOTLESS_BASIC -> {
                 setCheckboxState(cbSystemMock, enabled = true, checked = true, label = "系统GPS注入")
                 setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                 setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-                setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
+                // 默认不开启局部 VPN，确保微信/高德正常联网
+                setCheckboxState(cbVpn, enabled = true, checked = false, label = "VPN阻断(可选)")
             }
         }
         ConfigManager.save(this, buildCurrentConfig(enabled = false), syncTmpWithRoot = false)
@@ -519,7 +521,6 @@ class MainActivity : Activity() {
                 val uiPrefs = getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
                 val savedRaw = uiPrefs.getString(KEY_SELECTED_WORK_MODE, null)
                 if (savedRaw == null) {
-                    // 首次启动按检测到的最佳能力给出默认推荐模式
                     selectedMode = when {
                         hasRoot -> WorkMode.ROOT_LSPOSED
                         hasShizukuBinder || ShizukuHelper.isShizukuInstalled(this) -> WorkMode.SHIZUKU
@@ -573,7 +574,6 @@ class MainActivity : Activity() {
             return
         }
 
-        // 仅当用户处于 Root + LSPosed 模式且首次打开 LSPosed 开关但尚未重启时自动弹出重启框
         if (selectedMode == WorkMode.ROOT_LSPOSED &&
             hasXposed &&
             !hasSystemHookActive &&
@@ -644,13 +644,13 @@ class MainActivity : Activity() {
                     setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
                     setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                     setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-                    setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
+                    setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(可选)")
                 }
             }
 
             WorkMode.SHIZUKU -> {
                 val mockAllowed = RootUtils.isMockLocationAllowed(this)
-                tvSubtitleMode.text = "免 Root · Shizuku 自动授权 + 防扫描 + RST-VPN"
+                tvSubtitleMode.text = "免 Root · Shizuku 自动授权 + 自动关扫描"
                 tvRootStatus.text = "模式: Shizuku增强 ›"
                 tvRootStatus.setTextColor(Color.parseColor("#2563EB"))
 
@@ -660,7 +660,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                     tvDegradedTitle.text = "Shizuku 免 Root 增强模式已就绪"
                     tvDegradedDesc.text =
-                        "已自动接管模拟位置授权；漂移时自动临时关闭系统 Wi-Fi/蓝牙扫描防回弹，配合局部 RST-VPN 拒止定位接口（无法隐藏 isMock 标记或隔离蜂窝基站）。"
+                        "已自动放行模拟位置；开启漂移时自动关闭后台 Wi-Fi/蓝牙扫描防回弹（不拦截正常上网，微信/高德正常联网；受 SELinux 限制无法抹除 isMock 或隔离基站）。"
                     btnDegradedAction.text = "模式对比 ›"
                 } else if (hasShizukuBinder) {
                     tvXposedStatus.text = "Shizuku: 待授权 ›"
@@ -694,12 +694,12 @@ class MainActivity : Activity() {
                     checked = shizukuAutoSuppressScan,
                     label = "自动关扫描(Shizuku)"
                 )
-                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
+                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(可选)")
             }
 
             WorkMode.ROOTLESS_BASIC -> {
                 val mockAllowed = RootUtils.isMockLocationAllowed(this)
-                tvSubtitleMode.text = "纯免 Root 基础模式 · 系统模拟定位 + RST-VPN"
+                tvSubtitleMode.text = "纯免 Root 基础模式 · 系统模拟定位"
                 tvRootStatus.text = "模式: 纯免Root基础 ›"
                 tvRootStatus.setTextColor(Color.parseColor("#D97706"))
 
@@ -709,7 +709,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                     tvDegradedTitle.text = "纯免 Root 基础模式已就绪"
                     tvDegradedDesc.text =
-                        "已启用系统GPS + 局部RST-VPN（主动回发 TCP RST 加速回落 GPS）。建议在系统位置服务中手动关闭 Wi-Fi/蓝牙扫描，或切换至 Shizuku 模式自动接管。"
+                        "已启用系统模拟位置（不接管系统网络，微信/高德正常联网）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描防回弹，或切换至 Shizuku 模式自动接管。"
                     btnDegradedAction.text = "防漂移指南 ›"
                 } else {
                     tvXposedStatus.text = "模拟定位: 未设置 ›"
@@ -723,7 +723,7 @@ class MainActivity : Activity() {
                 setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
                 setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                 setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
+                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(可选)")
             }
         }
     }
@@ -883,7 +883,7 @@ class MainActivity : Activity() {
             "免 Root 推荐 · 自动授权 + 自动防扫描",
             "✓ 无需 Root，通过 Shizuku (ADB 权限) 一键自动放行模拟位置\n" +
                 "✓ 漂移时自动临时关闭系统 Wi-Fi/蓝牙扫描防回弹，停止自动还原\n" +
-                "✓ 局部 RST-VPN 主动回发 TCP RST 加速回落虚拟 GPS",
+                "✓ 不改变设备正常联网通道，微信/高德地图正常使用",
             "✗ 差别：受 SELinux 限制，无法抹除 isMock 标记或隐藏蜂窝基站"
         )
         cardRefs.add(cShizuku)
@@ -892,13 +892,13 @@ class MainActivity : Activity() {
             WorkMode.ROOTLESS_BASIC,
             "3. 纯免 Root 基础降级模式",
             "零外部依赖 · 无需 Root 也无需 Shizuku",
-            "✓ 开箱即用，仅依赖系统公开模拟位置 API 与局部 RST-VPN\n" +
-                "✓ 局部 VPN 仅拦截腾讯等定位域名，不影响日常正常上网",
+            "✓ 开箱即用，仅依赖系统公开模拟位置 API\n" +
+                "✓ 不改变设备正常联网通道，微信/高德地图正常使用",
             "✗ 差别：需手动去开发者选项授权并手动关扫描；无法隐藏 isMock/基站"
         )
         cardRefs.add(cBasic)
 
-        // Shizuku 快捷授权/启动操作条（选中 Shizuku 模式且尚未授权时自动高亮展示）
+        // Shizuku 快捷授权/启动操作条
         val shizukuActionBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1338,7 +1338,7 @@ class MainActivity : Activity() {
                     if (mockAllowed) "已授权 ✓" else "未设置 (必须配置) ✗",
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
-                addStatusCheckRow(statusCard, "2. 局部 RST-VPN 通道", "支持 (免证书秒级拒止)", "#059669")
+                addStatusCheckRow(statusCard, "2. 正常联网兼容性", "不接管网络 (微信/高德正常)", "#059669")
                 addStatusCheckRow(statusCard, "3. 抹除isMock / 基站隔离", "不支持 (需Root+LSPosed)", "#64748B")
             }
         }
@@ -1356,14 +1356,14 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "自动化防漂移机制（无需手动进开发者选项）",
+                    "自动化防漂移机制（不改变正常网络路由）",
                     "开启漂移时，本应用会自动通过 Shizuku 放行模拟位置权限，并临时关闭系统后台「Wi-Fi 扫描」与「蓝牙扫描」以防室内定位回弹；停止漂移时自动恢复原开关状态。"
                 )
                 addStepCard(
                     root,
                     "!",
-                    "与完整模式的差异说明",
-                    "Shizuku 运行在 ADB Shell (UID 2000) 域，无法注入 system_server，因此无法抹除 Location.isMock() 标记，也无法向三方应用隐藏蜂窝基站。"
+                    "关于「VPN阻断(可选)」与完整模式的差异",
+                    "默认无需勾选 VPN 阻断即可保持微信、高德等应用完全正常联网。Shizuku 运行在 ADB Shell (UID 2000) 域，无法注入 system_server，因此无法抹除 Location.isMock() 标记或隐藏蜂窝基站。"
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1377,8 +1377,8 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "保持开启「系统GPS注入 + VPN阻断(推荐)」",
-                    "局部 VPN 仅对腾讯等网络定位域名建立精准路由并主动回发 TCP RST，不会接管正常上网流量，可迫使定位 SDK 快速回落至虚拟 GPS。"
+                    "保持默认「系统GPS注入」（无需开 VPN）",
+                    "默认仅启用系统模拟定位，不接管设备网络路由，微信与高德地图均可正常联网。"
                 )
                 addStepCard(
                     root,
