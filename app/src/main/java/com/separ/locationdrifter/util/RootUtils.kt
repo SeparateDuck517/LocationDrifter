@@ -17,6 +17,7 @@ import java.util.concurrent.Executors
  */
 object RootUtils {
 
+    private const val OPSTR_MOCK_LOCATION = "android:mock_location"
     private val rootTaskExecutor = Executors.newSingleThreadExecutor()
 
     fun runRootTask(task: () -> Unit) {
@@ -41,14 +42,14 @@ object RootUtils {
             val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
             val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 appOps.unsafeCheckOpNoThrow(
-                    AppOpsManager.OPSTR_MOCK_LOCATION,
+                    OPSTR_MOCK_LOCATION,
                     Process.myUid(),
                     context.packageName
                 )
             } else {
                 @Suppress("DEPRECATION")
                 appOps.checkOpNoThrow(
-                    AppOpsManager.OPSTR_MOCK_LOCATION,
+                    OPSTR_MOCK_LOCATION,
                     Process.myUid(),
                     context.packageName
                 )
