@@ -58,7 +58,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : Activity() {
 
@@ -74,7 +77,8 @@ class MainActivity : Activity() {
         private const val KEY_SHIZUKU_ISOLATE_TARGET_APPS = "shizuku_isolate_target_apps"
         private const val KEY_VPN_DEFAULT_MIGRATED_V2 = "vpn_default_migrated_v2"
         private const val PROBE_PROVIDER = "location_drifter_probe"
-        private val searchExecutor = Executors.newSingleThreadExecutor()
+        private val searchPool = Executors.newCachedThreadPool()
+        private val searchGeneration = AtomicInteger(0)
 
         private val BUILTIN_CITIES_GCJ02 = listOf(
             "北京" to (39.908823 to 116.397470),
@@ -89,18 +93,26 @@ class MainActivity : Activity() {
             "西安" to (34.341574 to 108.939770),
             "长沙" to (28.228209 to 112.938814),
             "南昌" to (28.682892 to 115.858198),
+            "赣州" to (25.831091 to 114.935909),
+            "九江" to (29.705103 to 116.001951),
+            "上饶" to (28.454863 to 117.943433),
             "郑州" to (34.746599 to 113.625368),
             "济南" to (36.651216 to 117.120098),
             "青岛" to (36.067108 to 120.382609),
             "苏州" to (31.298974 to 120.585289),
+            "无锡" to (31.491169 to 120.311910),
+            "宁波" to (29.868388 to 121.543990),
+            "温州" to (27.993849 to 120.699367),
             "天津" to (39.084158 to 117.200983),
             "合肥" to (31.820586 to 117.227239),
             "福州" to (26.074508 to 119.296494),
             "厦门" to (24.479834 to 118.089425),
+            "泉州" to (24.874132 to 118.675675),
             "昆明" to (24.880095 to 102.832891),
             "贵阳" to (26.647661 to 106.630154),
             "南宁" to (22.817002 to 108.366543),
             "海口" to (20.044002 to 110.198293),
+            "三亚" to (18.252847 to 109.511909),
             "石家庄" to (38.042758 to 114.514860),
             "太原" to (37.870590 to 112.548879),
             "沈阳" to (41.805698 to 123.431475),
@@ -113,6 +125,9 @@ class MainActivity : Activity() {
             "银川" to (38.487194 to 106.230909),
             "乌鲁木齐" to (43.825592 to 87.616848),
             "拉萨" to (29.652491 to 91.172112),
+            "东莞" to (23.020673 to 113.751799),
+            "佛山" to (23.021548 to 113.121416),
+            "珠海" to (22.270715 to 113.576726),
             "香港" to (22.319304 to 114.169361),
             "澳门" to (22.198745 to 113.543873),
             "台北" to (25.032969 to 121.565418)
@@ -422,6 +437,8 @@ class MainActivity : Activity() {
                     handleShizukuConnectAction()
                 selectedMode == WorkMode.SHIZUKU && hasShizukuPermission && !RootUtils.isMockLocationAllowed(this) && shizukuAutoGrantTried ->
                     openDeveloperOptions()
+                selectedMode == WorkMode.SHIZUKU && hasShizukuPermission ->
+                    showTargetAppsConfigDialog()
                 selectedMode == WorkMode.ROOTLESS_BASIC && !RootUtils.isMockLocationAllowed(this) ->
                     openDeveloperOptions()
                 else ->
@@ -467,6 +484,9 @@ class MainActivity : Activity() {
         }
 
         btnClearSearch.setOnClickListener {
+            searchGeneration.incrementAndGet()
+            btnSearchPlace.isEnabled = true
+            btnSearchPlace.text = "定位"
             etPlaceSearch.setText("")
             hideSearchCandidates()
             etPlaceSearch.requestFocus()
@@ -522,9 +542,10 @@ class MainActivity : Activity() {
             }
         }
 
+        val gen = searchGeneration.incrementAndGet()
         btnSearchPlace.isEnabled = false
         btnSearchPlace.text = "搜索中"
-        performPlaceSearch(q)
+        performPlaceSearch(q, gen)
     }
 
     private fun showNativeCandidates(candidates: List<PlaceSearchResult>) {
@@ -822,14 +843,9 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 通过 LocationManagerService 实时探针 + Settings.Global 双重核验 system_server 是否已加载本模块 Hook，
-     * 彻底解决重启后因 BOOT_COUNT == 0 或 SettingsProvider 启动时序导致的误报「待重启」问题。
-     */
     private fun isSystemHookReadyThisBoot(): Boolean {
         if (!ModuleStatus.isModuleActive()) return false
 
-        // 1. 首选：直接向 system_server 的 LocationManagerService 发送实时探针
         try {
             val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             if (lm != null) {
@@ -843,7 +859,6 @@ class MainActivity : Activity() {
         } catch (_: Throwable) {
         }
 
-        // 2. 次选：校验 Settings.Global 记录的 BOOT_COUNT（兼容 BOOT_COUNT == 0）
         return try {
             val currentBoot = Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, 0)
             val hookedBoot = Settings.Global.getInt(
@@ -1069,9 +1084,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 方案二：配置 Shizuku AppOps 硬件定位感知隔离的目标应用弹窗（默认微信）
-     */
     private fun showTargetAppsConfigDialog() {
         val currentList = ShizukuHelper.getTargetApps(this).toMutableList()
         val scroll = ScrollView(this)
@@ -2427,7 +2439,7 @@ class MainActivity : Activity() {
         webMap.evaluateJavascript(js, null)
     }
 
-    private fun httpGetText(urlStr: String, timeoutMs: Int = 5500): String? {
+    private fun httpGetText(urlStr: String, timeoutMs: Int = 3200, referer: String? = null): String? {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
@@ -2435,9 +2447,15 @@ class MainActivity : Activity() {
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
                 instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "LocationDrifter/1.1 (Android)")
-                setRequestProperty("Accept", "application/json")
+                setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+                )
+                setRequestProperty("Accept", "application/json, text/plain, */*")
                 setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                if (!referer.isNullOrBlank()) {
+                    setRequestProperty("Referer", referer)
+                }
             }
             if (conn.responseCode in 200..299) {
                 BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
@@ -2451,10 +2469,98 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 国内主力 POI 搜索接口 1：百度地图 Web 检索 (BD-09MC -> GCJ-02)
+     */
+    private fun searchViaBaiduPoi(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
+        val url = "https://map.baidu.com/?newmap=1&reqflag=pcmap&biz=1&from=webmap" +
+            "&da_par=direct&pcevaname=pc4.1&qt=s&da_src=searchBox.button" +
+            "&wd=$encodedQuery&c=1&src=0&wd2=&pn=0&sug=0"
+        val body = httpGetText(url, timeoutMs = 3200, referer = "https://map.baidu.com/") ?: return emptyList()
+        return try {
+            val rootObj = JSONObject(body)
+            val list = ArrayList<PlaceSearchResult>()
+
+            val contentArr = rootObj.optJSONArray("content")
+            if (contentArr != null) {
+                for (i in 0 until contentArr.length()) {
+                    val item = contentArr.optJSONObject(i) ?: continue
+                    val name = item.optString("name").trim().ifBlank { fallbackName }
+                    val addr = item.optString("addr").trim()
+                    val mcX = item.optDouble("x", Double.NaN).let {
+                        if (it.isNaN()) item.optString("diPointX").toDoubleOrNull() ?: Double.NaN else it
+                    }
+                    val mcY = item.optDouble("y", Double.NaN).let {
+                        if (it.isNaN()) item.optString("diPointY").toDoubleOrNull() ?: Double.NaN else it
+                    }
+                    if (mcX.isNaN() || mcY.isNaN() || (mcX == 0.0 && mcY == 0.0)) continue
+                    val gcj = CoordTransform.bd09McToGcj02(mcX, mcY)
+                    if (gcj.lat.isNaN() || gcj.lng.isNaN()) continue
+                    list.add(PlaceSearchResult(gcj.lat, gcj.lng, name, addr.ifBlank { name }))
+                }
+            }
+
+            if (list.isEmpty()) {
+                val contentObj = rootObj.optJSONObject("content")
+                if (contentObj != null) {
+                    val cname = contentObj.optString("cname", fallbackName).trim().ifBlank { fallbackName }
+                    val geo = contentObj.optString("geo")
+                    val coordPair = geo.substringAfter("|", "").substringBefore(";")
+                    val xy = coordPair.split(",")
+                    if (xy.size >= 2) {
+                        val mcX = xy[0].toDoubleOrNull()
+                        val mcY = xy[1].toDoubleOrNull()
+                        if (mcX != null && mcY != null) {
+                            val gcj = CoordTransform.bd09McToGcj02(mcX, mcY)
+                            list.add(PlaceSearchResult(gcj.lat, gcj.lng, cname, cname))
+                        }
+                    }
+                }
+            }
+            list
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /**
+     * 国内主力 POI 联想接口 2：百度地图 Suggest (/su)
+     */
+    private fun searchViaBaiduSuggest(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
+        val url = "https://map.baidu.com/su?wd=$encodedQuery&cid=1&type=0&newmap=1"
+        val body = httpGetText(url, timeoutMs = 3000, referer = "https://map.baidu.com/") ?: return emptyList()
+        return try {
+            val arr = JSONObject(body).optJSONArray("s") ?: return emptyList()
+            val list = ArrayList<PlaceSearchResult>()
+            for (i in 0 until arr.length()) {
+                val raw = arr.optString(i)
+                if (raw.isBlank()) continue
+                val parts = raw.split("$")
+                if (parts.size < 5) continue
+                val title = parts[0].trim().ifBlank { fallbackName }
+                val area = parts[1].trim()
+                val sub = parts[2].trim()
+                val mcX = parts[3].trim().toDoubleOrNull() ?: continue
+                val mcY = parts[4].trim().toDoubleOrNull() ?: continue
+                if (mcX == 0.0 && mcY == 0.0) continue
+                val gcj = CoordTransform.bd09McToGcj02(mcX, mcY)
+                if (gcj.lat.isNaN() || gcj.lng.isNaN()) continue
+                val detail = listOf(area, sub, title)
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString(" · ")
+                list.add(PlaceSearchResult(gcj.lat, gcj.lng, title, detail))
+            }
+            list
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
     private fun searchViaArcGis(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
         val url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates" +
             "?f=json&singleLine=$encodedQuery&maxLocations=5&outFields=PlaceName,Match_addr"
-        val body = httpGetText(url) ?: return emptyList()
+        val body = httpGetText(url, timeoutMs = 3200) ?: return emptyList()
         return try {
             val candidates = JSONObject(body).optJSONArray("candidates") ?: return emptyList()
             val list = ArrayList<PlaceSearchResult>()
@@ -2478,7 +2584,7 @@ class MainActivity : Activity() {
 
     private fun searchViaPhoton(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
         val url = "https://photon.komoot.io/api/?limit=5&q=$encodedQuery"
-        val body = httpGetText(url) ?: return emptyList()
+        val body = httpGetText(url, timeoutMs = 3200) ?: return emptyList()
         return try {
             val features = JSONObject(body).optJSONArray("features") ?: return emptyList()
             val list = ArrayList<PlaceSearchResult>()
@@ -2499,27 +2605,6 @@ class MainActivity : Activity() {
                     name
                 ).filter { it.isNotBlank() }.distinct().joinToString(" · ")
                 list.add(PlaceSearchResult(gcj.lat, gcj.lng, name, detail))
-            }
-            list
-        } catch (_: Throwable) {
-            emptyList()
-        }
-    }
-
-    private fun searchViaNominatim(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
-        val url = "https://nominatim.openstreetmap.org/search?format=json&limit=5&q=$encodedQuery"
-        val body = httpGetText(url) ?: return emptyList()
-        return try {
-            val arr = JSONArray(body)
-            val list = ArrayList<PlaceSearchResult>()
-            for (i in 0 until arr.length()) {
-                val item = arr.optJSONObject(i) ?: continue
-                val wgsLat = item.optString("lat").toDoubleOrNull() ?: continue
-                val wgsLng = item.optString("lon").toDoubleOrNull() ?: continue
-                val gcj = CoordTransform.wgs84ToGcj02(wgsLat, wgsLng)
-                val display = item.optString("display_name", fallbackName)
-                val name = display.substringBefore(",").ifBlank { fallbackName }
-                list.add(PlaceSearchResult(gcj.lat, gcj.lng, name, display))
             }
             list
         } catch (_: Throwable) {
@@ -2557,25 +2642,80 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun performPlaceSearch(query: String) {
-        searchExecutor.execute {
+    /**
+     * 多源并行竞速地理编码：
+     * 优先采用国内低延迟 POI 接口（百度检索 + 百度联想），并行竞速海外源（ArcGIS + Photon），
+     * 严格限制总等待时间 <= 4.2s，彻底杜绝海外接口超时导致界面卡死在「搜索中」。
+     */
+    private fun performPlaceSearch(query: String, gen: Int) {
+        searchPool.execute {
             val encoded = try {
                 URLEncoder.encode(query, "UTF-8")
             } catch (_: Throwable) {
                 query
             }
-            val candidates = searchViaArcGis(encoded, query).ifEmpty {
-                searchViaPhoton(encoded, query).ifEmpty {
-                    searchViaNominatim(encoded, query).ifEmpty {
-                        searchViaSystemGeocoder(query).ifEmpty {
-                            searchViaBuiltinCities(query)
-                        }
-                    }
+
+            val fBaiduPoi = searchPool.submit(Callable { searchViaBaiduPoi(encoded, query) })
+            val fBaiduSug = searchPool.submit(Callable { searchViaBaiduSuggest(encoded, query) })
+            val fArcGis = searchPool.submit(Callable { searchViaArcGis(encoded, query) })
+            val fPhoton = searchPool.submit(Callable { searchViaPhoton(encoded, query) })
+
+            val deadline = System.currentTimeMillis() + 4200L
+            var candidates: List<PlaceSearchResult> = emptyList()
+
+            while (System.currentTimeMillis() < deadline) {
+                if (searchGeneration.get() != gen) break
+
+                val poiRes = if (fBaiduPoi.isDone) runCatching { fBaiduPoi.get() }.getOrDefault(emptyList()) else emptyList()
+                if (poiRes.isNotEmpty()) {
+                    candidates = poiRes
+                    break
+                }
+
+                val sugRes = if (fBaiduSug.isDone) runCatching { fBaiduSug.get() }.getOrDefault(emptyList()) else emptyList()
+                if (sugRes.isNotEmpty()) {
+                    candidates = sugRes
+                    break
+                }
+
+                val bothDomesticDone = fBaiduPoi.isDone && fBaiduSug.isDone
+                val arcRes = if (fArcGis.isDone) runCatching { fArcGis.get() }.getOrDefault(emptyList()) else emptyList()
+                val phoRes = if (fPhoton.isDone) runCatching { fPhoton.get() }.getOrDefault(emptyList()) else emptyList()
+
+                if (bothDomesticDone && (arcRes.isNotEmpty() || phoRes.isNotEmpty())) {
+                    candidates = arcRes.ifEmpty { phoRes }
+                    break
+                }
+                if (bothDomesticDone && fArcGis.isDone && fPhoton.isDone) {
+                    break
+                }
+
+                try {
+                    Thread.sleep(60L)
+                } catch (_: InterruptedException) {
+                    break
                 }
             }
 
+            if (candidates.isEmpty()) {
+                candidates = runCatching { fBaiduPoi.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList())
+                    .ifEmpty { runCatching { fBaiduSug.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
+                    .ifEmpty { runCatching { fArcGis.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
+                    .ifEmpty { runCatching { fPhoton.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
+                    .ifEmpty { searchViaBuiltinCities(query) }
+                    .ifEmpty {
+                        val fSys = searchPool.submit(Callable { searchViaSystemGeocoder(query) })
+                        runCatching { fSys.get(1500, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList())
+                    }
+            }
+
+            fBaiduPoi.cancel(true)
+            fBaiduSug.cancel(true)
+            fArcGis.cancel(true)
+            fPhoton.cancel(true)
+
             runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (isFinishing || isDestroyed || searchGeneration.get() != gen) return@runOnUiThread
                 btnSearchPlace.isEnabled = true
                 btnSearchPlace.text = "定位"
                 if (candidates.isNotEmpty()) {
