@@ -45,7 +45,7 @@
                     android:layout_marginTop="1dp"
                     android:ellipsize="end"
                     android:maxLines="1"
-                    android:text="零三方应用注入架构 · 系统级防漂移"
+                    android:text="系统级防漂移 · 零三方注入"
                     android:textColor="#64748B"
                     android:textSize="10.5sp" />
             </LinearLayout>
@@ -139,7 +139,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 降级模式/环境提醒横幅（键盘弹出搜索时自动折叠，防止挤压地图区域） -->
+        <!-- 状态提示横幅（精简紧凑排版） -->
         <LinearLayout
             android:id="@+id/cardDegradedBanner"
             android:layout_width="match_parent"
@@ -150,9 +150,9 @@
             android:focusable="true"
             android:orientation="vertical"
             android:paddingStart="10dp"
-            android:paddingTop="8dp"
+            android:paddingTop="7dp"
             android:paddingEnd="10dp"
-            android:paddingBottom="8dp"
+            android:paddingBottom="7dp"
             android:visibility="gone">
 
             <LinearLayout
@@ -166,7 +166,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="免 Root 降级兼容模式"
+                    android:text="模式已就绪"
                     android:textColor="#92400E"
                     android:textSize="12sp"
                     android:textStyle="bold" />
@@ -178,9 +178,9 @@
                     android:layout_marginStart="6dp"
                     android:background="@drawable/bg_btn_secondary"
                     android:paddingStart="8dp"
-                    android:paddingTop="3dp"
+                    android:paddingTop="2dp"
                     android:paddingEnd="8dp"
-                    android:paddingBottom="3dp"
+                    android:paddingBottom="2dp"
                     android:text="配置指引 ›"
                     android:textColor="#1D4ED8"
                     android:textSize="11sp"
@@ -191,9 +191,9 @@
                 android:id="@+id/tvDegradedDesc"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:lineSpacingExtra="2dp"
-                android:text="已启用系统模拟定位 + 局部 RST-VPN 阻断。因无系统 Hook，无法隐藏 isMock 标记或底层屏蔽 Wi-Fi/基站。"
+                android:layout_marginTop="3dp"
+                android:lineSpacingExtra="1.5dp"
+                android:text="已启用模拟定位与网络定位阻断。"
                 android:textColor="#78350F"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -204,7 +204,7 @@
         android:layout_height="1dp"
         android:background="#E2E8F0" />
 
-    <!-- 地图选点区域 + 原生悬浮搜索栏（键盘弹出时自动隐藏底部面板，搜索框永不被遮挡） -->
+    <!-- 地图选点区域 + 原生悬浮搜索栏 -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -241,7 +241,7 @@
                     android:layout_height="36dp"
                     android:layout_weight="1"
                     android:background="@null"
-                    android:hint="搜地名（如 天安门）或输经纬度"
+                    android:hint="搜地名或输入经纬度"
                     android:imeOptions="actionSearch"
                     android:inputType="text"
                     android:maxLines="1"
@@ -303,7 +303,7 @@
         android:layout_height="1dp"
         android:background="#E2E8F0" />
 
-    <!-- 底部卡片控制面板（输入法弹出时自动收起，留足搜索操作空间） -->
+    <!-- 底部卡片控制面板 -->
     <LinearLayout
         android:id="@+id/bottomControlPanel"
         android:layout_width="match_parent"
@@ -387,7 +387,7 @@
                 android:background="@drawable/bg_btn_secondary"
                 android:padding="0dp"
                 android:stateListAnimator="@null"
-                android:text="输入/粘贴坐标"
+                android:text="输入坐标"
                 android:textColor="#1D4ED8"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -521,7 +521,7 @@
                 android:background="@drawable/bg_btn_primary"
                 android:backgroundTint="#2563EB"
                 android:stateListAnimator="@null"
-                android:text="一键开启定位漂移"
+                android:text="开启定位漂移"
                 android:textColor="#FFFFFF"
                 android:textSize="15sp"
                 android:textStyle="bold" />

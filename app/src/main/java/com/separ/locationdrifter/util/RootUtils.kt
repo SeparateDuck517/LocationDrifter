@@ -37,9 +37,6 @@ object RootUtils {
         return execSu("svc power reboot || reboot").success
     }
 
-    /**
-     * 免 Root 环境下检测当前应用是否已被授予模拟位置权限
-     */
     fun isMockLocationAllowed(context: Context): Boolean {
         return try {
             val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -84,9 +81,6 @@ object RootUtils {
         }
     }
 
-    /**
-     * 免手动去开发者选项设置模拟位置应用，并授予后台定位与安全设置权限
-     */
     fun grantMockAndLocationPermissions(packageName: String): Boolean {
         val cmd = """
             appops set --user 0 $packageName android:mock_location allow 2>/dev/null || appops set $packageName android:mock_location allow
@@ -98,9 +92,6 @@ object RootUtils {
         return execSu(cmd).success
     }
 
-    /**
-     * 将 JSON 同步写入 Settings.Global 与 /data/local/tmp/location_drifter.json 作为跨进程兜底配置
-     */
     fun writeTmpConfigJson(jsonText: String): Boolean {
         val escaped = jsonText.replace("'", "'\\''")
         val cmd = """
@@ -115,34 +106,27 @@ object RootUtils {
     private const val IPTABLES_CHAIN = "LOC_DRIFT_BLOCK"
 
     /**
-     * 高频网络定位 SDK 域名列表（覆盖微信内置腾讯定位 SDK、高德/百度网络定位接口）：
-     * 当网络定位请求收到 TCP RST / ICMP Port Unreachable 后会立即回落到系统 LocationManager 虚拟 GPS。
+     * 纯网络定位（基站/Wi-Fi 指纹三角定位）接口域名（放行地图瓦片与逆地理编码接口）
      */
     val LBS_HOSTS = listOf(
         "lbs.map.qq.com",
-        "c.map.qq.com",
         "loc.map.qq.com",
+        "c.map.qq.com",
         "datalbs.map.qq.com",
-        "apis.map.qq.com",
-        "rtt.map.qq.com",
-        "ping.map.qq.com",
-        "pr.map.qq.com",
-        "s.map.qq.com",
-        "confinfo.map.qq.com",
-        "overseactrl.map.qq.com",
-        "newsso.map.qq.com",
         "apilocate.amap.com",
         "cgicol.amap.com",
         "loc.map.baidu.com",
         "ofloc.map.baidu.com"
     )
 
-    // 仅保护微信核心 mmtls IM 长短连接与 HTTPDNS 域名（不包含 mp/res/wx 等通用 CDN 域名，避免共享 EdgeOne IP 误放行定位接口）
+    // 微信核心 mmtls IM 长短连接与解析节点，避免三层 IP 拦截误伤微信聊天连接
     val PROTECTED_TENCENT_HOSTS = listOf(
         "szshort.weixin.qq.com",
         "szlong.weixin.qq.com",
         "szextshort.weixin.qq.com",
         "szminorshort.weixin.qq.com",
+        "extshort.weixin.qq.com",
+        "minorshort.weixin.qq.com",
         "short.weixin.qq.com",
         "long.weixin.qq.com",
         "dns.weixin.qq.com"
