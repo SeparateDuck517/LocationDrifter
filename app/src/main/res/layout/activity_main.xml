@@ -34,7 +34,7 @@
                     android:layout_height="wrap_content"
                     android:text="定位漂移助手"
                     android:textColor="#0F172A"
-                    android:textSize="17sp"
+                    android:textSize="16.5sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -46,22 +46,37 @@
                     android:maxLines="1"
                     android:text="零三方应用注入架构 · 系统级防漂移"
                     android:textColor="#64748B"
-                    android:textSize="11sp" />
+                    android:textSize="10.5sp" />
             </LinearLayout>
+
+            <TextView
+                android:id="@+id/btnSwitchMode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="5dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:paddingStart="8dp"
+                android:paddingTop="5dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="5dp"
+                android:text="切换模式"
+                android:textColor="#1D4ED8"
+                android:textSize="11sp"
+                android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/btnHelpGuide"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
+                android:layout_marginEnd="5dp"
                 android:background="@drawable/bg_btn_secondary"
-                android:paddingStart="9dp"
+                android:paddingStart="8dp"
                 android:paddingTop="5dp"
-                android:paddingEnd="9dp"
+                android:paddingEnd="8dp"
                 android:paddingBottom="5dp"
-                android:text="使用指引"
+                android:text="指引"
                 android:textColor="#1D4ED8"
-                android:textSize="11.5sp"
+                android:textSize="11sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -69,13 +84,13 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_status_pill"
-                android:paddingStart="10dp"
+                android:paddingStart="9dp"
                 android:paddingTop="5dp"
-                android:paddingEnd="10dp"
+                android:paddingEnd="9dp"
                 android:paddingBottom="5dp"
                 android:text="● 未开启"
                 android:textColor="#64748B"
-                android:textSize="11.5sp"
+                android:textSize="11sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
@@ -98,7 +113,7 @@
                 android:paddingTop="4dp"
                 android:paddingEnd="6dp"
                 android:paddingBottom="4dp"
-                android:text="Root: 检测中..."
+                android:text="模式: 检测中..."
                 android:textColor="#475569"
                 android:textSize="11sp"
                 android:textStyle="bold" />
@@ -117,13 +132,13 @@
                 android:paddingTop="4dp"
                 android:paddingEnd="6dp"
                 android:paddingBottom="4dp"
-                android:text="LSPosed: 检测中..."
+                android:text="权限: 检测中..."
                 android:textColor="#475569"
                 android:textSize="11sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 降级模式/环境提醒横幅（点击整张卡片或右侧按钮均可打开图文向导） -->
+        <!-- 降级模式/环境提醒横幅（点击整张卡片或右侧按钮均可打开向导/授权） -->
         <LinearLayout
             android:id="@+id/cardDegradedBanner"
             android:layout_width="match_parent"

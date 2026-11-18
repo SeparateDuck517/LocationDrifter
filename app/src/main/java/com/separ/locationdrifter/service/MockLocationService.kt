@@ -23,11 +23,12 @@ import com.separ.locationdrifter.MainActivity
 import com.separ.locationdrifter.R
 import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.util.RootUtils
+import com.separ.locationdrifter.util.ShizukuHelper
 import java.util.Locale
 import kotlin.random.Random
 
 /**
- * 持续向系统 LocationManager 注入虚拟位置（支持 Root 自动授权及免 Root 开发者选项授权模式）
+ * 持续向系统 LocationManager 注入虚拟位置（支持 Root、Shizuku 免 Root 自动授权及手动开发者选项授权模式）
  */
 class MockLocationService : Service() {
 
@@ -121,9 +122,13 @@ class MockLocationService : Service() {
         }
 
         workerHandler?.post {
-            // 仅在具备 Root 且尚未获得模拟位置权限时用 su 自动放行；免 Root 模式直接走系统开发者选项授权
-            if (!RootUtils.isMockLocationAllowed(this) && RootUtils.isRootAvailable()) {
-                RootUtils.grantMockAndLocationPermissions(packageName)
+            // 尚未获得模拟位置权限时，依次尝试 Root (UID 0) 或 Shizuku (UID 2000) 自动放行
+            if (!RootUtils.isMockLocationAllowed(this)) {
+                if (RootUtils.isRootAvailable()) {
+                    RootUtils.grantMockAndLocationPermissions(packageName)
+                } else if (ShizukuHelper.hasPermission()) {
+                    ShizukuHelper.grantMockAndLocationPermissions(packageName)
+                }
             }
             setupTestProviders()
             updateNotification(cfg)
@@ -299,7 +304,7 @@ class MockLocationService : Service() {
             "定位漂移助手运行中"
         }
         val content = if (missingAuth) {
-            "请在系统「开发者选项 → 选择模拟位置信息应用」中选中本应用"
+            "请在系统「开发者选项 → 选择模拟位置信息应用」中选中本应用，或使用 Shizuku 自动授权"
         } else {
             String.format(
                 Locale.US,
