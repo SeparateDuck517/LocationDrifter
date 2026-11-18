@@ -126,6 +126,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
                 hookWifiServiceInSystemServer(lpparam.classLoader)
                 hookTelephonyRegistryInSystemServer(lpparam.classLoader)
                 hookNetworkRegistrationInfo(lpparam.classLoader)
+                markSystemServerHookedAsync()
             }
             "com.android.phone" -> {
                 hookParceledListSlice()
@@ -135,6 +136,39 @@ class LocationHookEntry : IXposedHookLoadPackage {
             else -> {
                 return
             }
+        }
+    }
+
+    /**
+     * 在 system_server 启动并加载本模块后，将当前 BOOT_COUNT 写入 Settings.Global，
+     * 供前端精准区分「刚开启 LSPosed 开关但尚未重启」与「已重启且 system_server Hook 生效」两种状态。
+     */
+    private fun markSystemServerHookedAsync() {
+        Thread {
+            for (attempt in 0 until 30) {
+                try {
+                    val ctx = resolveContext()
+                    if (ctx != null) {
+                        val cr = ctx.contentResolver
+                        val bootCount = Settings.Global.getInt(cr, Settings.Global.BOOT_COUNT, -1)
+                        if (bootCount > 0) {
+                            Settings.Global.putInt(cr, ConfigManager.SETTINGS_GLOBAL_HOOKED_BOOT_KEY, bootCount)
+                            XposedBridge.log("$TAG system_server hook ready for boot_count=$bootCount")
+                            return@Thread
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+                try {
+                    Thread.sleep(2000L)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }.apply {
+            name = "LocationDrifter-BootMarker"
+            isDaemon = true
+            start()
         }
     }
 
