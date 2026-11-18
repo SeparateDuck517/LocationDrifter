@@ -14,104 +14,6 @@
       background: #e2e8f0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
-    .search-wrapper {
-      position: absolute;
-      top: 12px;
-      left: 12px;
-      right: 12px;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .search-bar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(255, 255, 255, 0.94);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      padding: 6px 6px 6px 12px;
-      border-radius: 14px;
-      border: 1px solid rgba(226, 232, 240, 0.9);
-      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
-    }
-    .search-bar input {
-      flex: 1;
-      min-width: 0;
-      border: none;
-      background: transparent;
-      padding: 6px 2px;
-      font-size: 13px;
-      color: #0f172a;
-      outline: none;
-    }
-    .search-bar input::placeholder {
-      color: #94a3b8;
-    }
-    .clear-btn {
-      display: none;
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      border: none;
-      background: #e2e8f0;
-      color: #475569;
-      font-size: 14px;
-      line-height: 24px;
-      text-align: center;
-      cursor: pointer;
-    }
-    .search-btn {
-      border: none;
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      color: #fff;
-      border-radius: 10px;
-      padding: 8px 14px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
-    }
-    .search-btn:disabled {
-      background: #93c5fd;
-      box-shadow: none;
-    }
-    .candidates-box {
-      display: none;
-      background: rgba(255, 255, 255, 0.97);
-      backdrop-filter: blur(12px);
-      border-radius: 12px;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
-      max-height: 210px;
-      overflow-y: auto;
-    }
-    .candidate-item {
-      padding: 10px 14px;
-      border-bottom: 1px solid #f1f5f9;
-      cursor: pointer;
-    }
-    .candidate-item:last-child {
-      border-bottom: none;
-    }
-    .candidate-item:active {
-      background: #eff6ff;
-    }
-    .candidate-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: #0f172a;
-    }
-    .candidate-sub {
-      font-size: 11px;
-      color: #64748b;
-      margin-top: 2px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
     .layer-toggle {
       position: absolute;
       right: 12px;
@@ -139,7 +41,7 @@
     }
     .fallback-box {
       position: absolute;
-      inset: 68px 14px auto 14px;
+      inset: 64px 14px auto 14px;
       z-index: 999;
       background: #fef3c7;
       color: #92400e;
@@ -153,15 +55,6 @@
   </style>
 </head>
 <body>
-  <div class="search-wrapper">
-    <div class="search-bar">
-      <input id="searchInput" type="text" placeholder="搜地名（如 天安门）或输经纬度" />
-      <button id="clearBtn" class="clear-btn" onclick="clearSearchInput()">×</button>
-      <button id="searchBtn" class="search-btn" onclick="handleSearch()">定位</button>
-    </div>
-    <div id="candidatesBox" class="candidates-box"></div>
-  </div>
-
   <div id="fallbackBox" class="fallback-box">
     离线或地图脚本加载较慢，请检查网络，或直接点击下方「输入/粘贴坐标」手动填写经纬度。
   </div>
@@ -180,14 +73,6 @@
       s.onload = onOk;
       s.onerror = onErr;
       document.head.appendChild(s);
-    }
-
-    function showMessage(msg) {
-      if (window.AndroidBridge && window.AndroidBridge.showToast) {
-        window.AndroidBridge.showToast(msg);
-      } else {
-        alert(msg);
-      }
     }
 
     var map, marker, accuracyCircle, roadLayer, satLayer, isSat = false;
@@ -238,22 +123,6 @@
       return { lat: wLat, lng: wLng };
     }
 
-    function hideCandidates() {
-      var box = document.getElementById('candidatesBox');
-      if (box) {
-        box.style.display = 'none';
-        box.innerHTML = '';
-      }
-    }
-
-    function clearSearchInput() {
-      var input = document.getElementById('searchInput');
-      input.value = '';
-      document.getElementById('clearBtn').style.display = 'none';
-      hideCandidates();
-      input.focus();
-    }
-
     function notifyNative(gcjLat, gcjLng, address) {
       currentGcjLat = gcjLat;
       currentGcjLng = gcjLng;
@@ -297,14 +166,12 @@
       marker = L.marker([currentGcjLat, currentGcjLng], { draggable: true }).addTo(map);
 
       marker.on('dragend', function () {
-        hideCandidates();
         var pos = marker.getLatLng();
         if (accuracyCircle) accuracyCircle.setLatLng(pos);
         notifyNative(pos.lat, pos.lng, '地图拖拽选点');
       });
 
       map.on('click', function (e) {
-        hideCandidates();
         marker.setLatLng(e.latlng);
         if (accuracyCircle) accuracyCircle.setLatLng(e.latlng);
         notifyNative(e.latlng.lat, e.latlng.lng, '地图点击选点');
@@ -325,64 +192,6 @@
         map.setView(ll, Math.max(map.getZoom(), 16));
       }
       notifyNative(gcjLat, gcjLng, label || '已选择位置');
-    };
-
-    function setSearchingState(searching) {
-      var btn = document.getElementById('searchBtn');
-      if (!btn) return;
-      btn.disabled = searching;
-      btn.textContent = searching ? '搜索中' : '定位';
-    }
-
-    window.onSearchResult = function (ok, gcjLat, gcjLng, label, errMsg) {
-      setSearchingState(false);
-      hideCandidates();
-      if (ok) {
-        window.setPoint(gcjLat, gcjLng, label);
-      } else {
-        showMessage(errMsg || '未找到该地点，可尝试更详细的地名或直接输入经纬度');
-      }
-    };
-
-    window.onSearchCandidates = function (rawJson) {
-      setSearchingState(false);
-      var list;
-      try {
-        list = JSON.parse(rawJson);
-      } catch (e) {
-        return;
-      }
-      if (!list || list.length === 0) {
-        hideCandidates();
-        showMessage('未找到该地点，可尝试更详细的地名或直接输入经纬度');
-        return;
-      }
-      var first = list[0];
-      window.setPoint(first.gcjLat, first.gcjLng, first.label);
-      if (list.length <= 1) {
-        hideCandidates();
-        return;
-      }
-      var box = document.getElementById('candidatesBox');
-      box.innerHTML = '';
-      list.forEach(function (item) {
-        var row = document.createElement('div');
-        row.className = 'candidate-item';
-        var title = document.createElement('div');
-        title.className = 'candidate-title';
-        title.textContent = item.label;
-        var sub = document.createElement('div');
-        sub.className = 'candidate-sub';
-        sub.textContent = item.detail || (item.gcjLat.toFixed(5) + ', ' + item.gcjLng.toFixed(5));
-        row.appendChild(title);
-        row.appendChild(sub);
-        row.onclick = function () {
-          window.setPoint(item.gcjLat, item.gcjLng, item.label);
-          hideCandidates();
-        };
-        box.appendChild(row);
-      });
-      box.style.display = 'block';
     };
 
     function toggleLayer() {
@@ -406,63 +215,6 @@
         map.setView(marker.getLatLng(), Math.max(map.getZoom(), 16));
       }
     }
-
-    function handleSearch() {
-      var inputEl = document.getElementById('searchInput');
-      var q = inputEl.value.trim();
-      if (!q) return;
-      inputEl.blur();
-
-      var m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,，\s]+\s*(-?\d+(?:\.\d+)?)\s*$/);
-      if (m) {
-        hideCandidates();
-        var a = parseFloat(m[1]);
-        var b = parseFloat(m[2]);
-        var lat = a, lng = b;
-        if (Math.abs(a) > 60 && Math.abs(b) <= 60) {
-          lng = a;
-          lat = b;
-        }
-        window.setPoint(lat, lng, '手动坐标');
-        return;
-      }
-
-      if (window.AndroidBridge && window.AndroidBridge.searchPlace) {
-        setSearchingState(true);
-        window.AndroidBridge.searchPlace(q);
-        return;
-      }
-
-      setSearchingState(true);
-      var url = 'https://photon.komoot.io/api/?limit=4&q=' + encodeURIComponent(q);
-      fetch(url)
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          setSearchingState(false);
-          if (data && data.features && data.features.length > 0) {
-            var feat = data.features[0];
-            var wgsLng = feat.geometry.coordinates[0];
-            var wgsLat = feat.geometry.coordinates[1];
-            var gcj = wgs84ToGcj02(wgsLat, wgsLng);
-            var shortName = (feat.properties && feat.properties.name) ? feat.properties.name : q;
-            window.setPoint(gcj.lat, gcj.lng, shortName);
-          } else {
-            showMessage('未找到该地点，可尝试更详细的地名或直接输入经纬度');
-          }
-        })
-        .catch(function () {
-          setSearchingState(false);
-          showMessage('地点搜索请求失败，请检查网络或直接输入经纬度坐标');
-        });
-    }
-
-    var searchInputEl = document.getElementById('searchInput');
-    searchInputEl.addEventListener('input', function () {
-      document.getElementById('clearBtn').style.display = this.value.length > 0 ? 'block' : 'none';
-    });
-    searchInputEl.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') handleSearch();
-    });
 
     loadScript(
       'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',

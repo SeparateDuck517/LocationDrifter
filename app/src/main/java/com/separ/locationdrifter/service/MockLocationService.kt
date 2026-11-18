@@ -39,7 +39,7 @@ class MockLocationService : Service() {
 
         private const val CHANNEL_ID = "location_drifter_channel"
         private const val NOTIFICATION_ID = 10086
-        private const val UPDATE_INTERVAL_MS = 300L
+        private const val UPDATE_INTERVAL_MS = 250L
 
         @Volatile
         var isRunning: Boolean = false
@@ -106,7 +106,24 @@ class MockLocationService : Service() {
                 startMocking(cfg)
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // 清除后台任务时自动复位漂移状态并停止服务
+        try {
+            val cfg = ConfigManager.load(this)
+            if (cfg.enabled) {
+                ConfigManager.save(this, cfg.copy(enabled = false), syncTmpWithRoot = false)
+            }
+        } catch (_: Throwable) {
+        }
+        ShizukuHelper.runShizukuTask {
+            ShizukuHelper.restoreAntiDriftScanSuppression(this)
+        }
+        stopMocking()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun startMocking(cfg: ConfigManager.DriftConfig) {
@@ -122,7 +139,6 @@ class MockLocationService : Service() {
         }
 
         workerHandler?.post {
-            // 尚未获得模拟位置权限时，依次尝试 Root (UID 0) 或 Shizuku (UID 2000) 自动放行
             if (!RootUtils.isMockLocationAllowed(this)) {
                 if (RootUtils.isRootAvailable()) {
                     RootUtils.grantMockAndLocationPermissions(packageName)
@@ -202,7 +218,7 @@ class MockLocationService : Service() {
                     latitude = lat
                     longitude = lng
                     altitude = 36.0
-                    accuracy = if (provider == LocationManager.GPS_PROVIDER) 3.2f else 5.0f
+                    accuracy = if (provider == LocationManager.GPS_PROVIDER) 3.0f else 12.0f
                     speed = jitterSpeed
                     bearing = jitterBearing
                     time = System.currentTimeMillis()

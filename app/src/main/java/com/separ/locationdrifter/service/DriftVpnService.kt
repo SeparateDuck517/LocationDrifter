@@ -4,26 +4,31 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.util.RootUtils
+import java.io.BufferedReader
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStreamReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 免 Root / 免 CA 证书的局部主动拒止 VPN 防漂移通道（DNS 精准分流 + IPv4/IPv6 双栈 RST 拒止）：
- * 1) 内置本地 TUN DNS 拦截器 (10.233.233.53)：
- *    - 针对微信内置腾讯定位 SDK (*.map.qq.com 定位接口) 与高德/百度网络定位域名，直接解析至黑洞地址
- *      10.233.233.254，在用户态毫秒级回发 TCP RST / ICMP Port Unreachable，消除 GeoDNS/CDN 节点漂移漏网；
- *    - 其余全部正常域名（含微信 mmtls 聊天、朋友圈、小程序等）通过 protect() 套接字透明转发至公共 DNS；
- * 2) 同步预解析多组公共 DNS 的 IPv4 (/32) 与 IPv6 (/128) 主机路由，拦截微信启动前已缓存的定位服务器 IP；
- * 3) 剔除微信核心 mmtls IM 长短连接节点 IP 并配置 allowBypass()，确保微信消息收发 100% 畅通。
+ * 免 Root / 免 CA 证书的局部主动拒止 VPN 防漂移通道（IPv4+IPv6 双栈 DNS 拦截 + Tencent HTTPDNS 收割 + RST 拒止）：
+ * 1) 不设置 allowBypass()，防止微信 Mars 网络引擎通过 bindSocket() 绕过局部 VPN；
+ *    由于仅针对定位服务器添加精确主机路由 (/32 与 /128)，绝不接管 0.0.0.0/0 或 ::/0，
+ *    且主动剔除微信核心 mmtls IM 长短连接节点 IP，因此微信聊天消息收发 100% 走物理网卡直连不受影响；
+ * 2) 配置 IPv4 (10.233.233.53) + IPv6 (fd00:233:233::53) 双栈本地 TUN DNS，将所有网络定位域名
+ *    解析至黑洞地址 (10.233.233.254 / fd00:233:233::254)，并在用户态回发 TCP RST / ICMP(v6) 不可达；
+ * 3) 同步向 Tencent HTTPDNS (119.29.29.29/d) 与多组公共 DNS 预提取定位服务器边缘 IP，拦截微信缓存的旧 IP。
  */
 class DriftVpnService : VpnService() {
 
@@ -34,11 +39,20 @@ class DriftVpnService : VpnService() {
         private const val TUN_IPV4 = "10.233.233.1"
         private const val TUN_DNS_IPV4 = "10.233.233.53"
         private const val TUN_SINKHOLE_IPV4 = "10.233.233.254"
+
         private const val TUN_IPV6 = "fd00:233:233::1"
+        private const val TUN_DNS_IPV6 = "fd00:233:233::53"
+        private const val TUN_SINKHOLE_IPV6 = "fd00:233:233::254"
+
+        // Tencent 定位 SDK 内置 HTTPDNS 专用解析服务器（不与微信 mmtls 冲突）
+        private val TENCENT_HTTPDNS_IPS = listOf(
+            "182.254.116.116",
+            "182.254.118.118"
+        )
 
         private val UPSTREAM_DNS_SERVERS = listOf(
             "223.5.5.5",
-            "119.29.29.29",
+            "223.6.6.6",
             "180.76.76.76",
             "114.114.114.114"
         )
@@ -63,7 +77,20 @@ class DriftVpnService : VpnService() {
         }
 
         startOrRestartVpnAsync()
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        try {
+            val cfg = ConfigManager.load(this)
+            if (cfg.enabled) {
+                ConfigManager.save(this, cfg.copy(enabled = false), syncTmpWithRoot = false)
+            }
+        } catch (_: Throwable) {
+        }
+        stopVpn()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun startOrRestartVpnAsync() {
@@ -73,18 +100,20 @@ class DriftVpnService : VpnService() {
 
         Thread {
             try {
-                // 仅排除微信核心 mmtls IM 节点 IP，避免共享 VIP 误伤微信聊天连接
+                // 1. 解析微信核心 mmtls IM 长短连接节点 IP（绝对放行，不进 TUN）
                 val protectedIps = HashSet<String>()
                 for (host in RootUtils.PROTECTED_TENCENT_HOSTS) {
-                    resolveHostIps(host).forEach { ip ->
+                    resolveHostIps(host, queryTencentHttpDns = false).forEach { ip ->
                         protectedIps.add(ip)
                     }
                 }
 
+                // 2. 通过多组公共 DNS + Tencent HTTPDNS 收割定位服务器 IPv4 / IPv6 边缘节点
                 val ipv4s = LinkedHashSet<String>()
                 val ipv6s = LinkedHashSet<String>()
+                ipv4s.addAll(TENCENT_HTTPDNS_IPS)
                 for (host in RootUtils.LBS_HOSTS) {
-                    resolveHostIps(host).forEach { rawIp ->
+                    resolveHostIps(host, queryTencentHttpDns = true).forEach { rawIp ->
                         if (rawIp in protectedIps) return@forEach
                         if (rawIp.contains(':')) {
                             ipv6s.add(rawIp)
@@ -102,9 +131,11 @@ class DriftVpnService : VpnService() {
                     .addAddress(TUN_IPV4, 32)
                     .addAddress(TUN_IPV6, 128)
                     .addDnsServer(TUN_DNS_IPV4)
+                    .addDnsServer(TUN_DNS_IPV6)
                     .addRoute(TUN_DNS_IPV4, 32)
                     .addRoute(TUN_SINKHOLE_IPV4, 32)
-                    .allowBypass()
+                    .addRoute(TUN_DNS_IPV6, 128)
+                    .addRoute(TUN_SINKHOLE_IPV6, 128)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
@@ -195,21 +226,26 @@ class DriftVpnService : VpnService() {
     }
 
     /**
-     * 拦截发往 10.233.233.53:53 的 UDP DNS 查询：
-     * - 匹配到网络定位域名时直接合成指向 10.233.233.254 的解析记录，后续 TCP/UDP 建连立即触发 RST 拒止；
+     * 拦截发往 10.233.233.53:53 或 [fd00:233:233::53]:53 的 UDP DNS 查询：
+     * - 匹配到网络定位域名时直接合成指向 10.233.233.254 (A) / fd00:233:233::254 (AAAA) 的黑洞记录，
+     *   后续 TCP/UDP 建连立即触发 TCP RST / ICMP(v6) 不可达拒止；
      * - 其余域名通过 protect() 套接字透明转发至上游公共 DNS。
      */
     private fun tryHandleTunDnsPacket(packet: ByteArray, length: Int, output: FileOutputStream): Boolean {
         if (length < 28) return false
         val version = (packet[0].toInt() ushr 4) and 0x0F
-        if (version != 4) return false
+        return when (version) {
+            4 -> handleIpv4DnsPacket(packet, length, output)
+            6 -> handleIpv6DnsPacket(packet, length, output)
+            else -> false
+        }
+    }
 
+    private fun handleIpv4DnsPacket(packet: ByteArray, length: Int, output: FileOutputStream): Boolean {
         val ihl = (packet[0].toInt() and 0x0F) * 4
         if (ihl < 20 || length < ihl + 8) return false
-        val proto = packet[9].toInt() and 0xFF
-        if (proto != 17) return false // UDP
+        if ((packet[9].toInt() and 0xFF) != 17) return false // UDP
 
-        // 检查目标 IP 是否为 10.233.233.53
         if ((packet[16].toInt() and 0xFF) != 10 ||
             (packet[17].toInt() and 0xFF) != 233 ||
             (packet[18].toInt() and 0xFF) != 233 ||
@@ -227,10 +263,9 @@ class DriftVpnService : VpnService() {
             .coerceAtMost(totalLen - ihl)
         if (udpLen <= 8) return true
 
-        val dnsOffset = ihl + 8
         val dnsLen = udpLen - 8
         val dnsQuery = ByteArray(dnsLen)
-        System.arraycopy(packet, dnsOffset, dnsQuery, 0, dnsLen)
+        System.arraycopy(packet, ihl + 8, dnsQuery, 0, dnsLen)
 
         val clientIp = ByteArray(4)
         System.arraycopy(packet, 12, clientIp, 0, 4)
@@ -242,8 +277,7 @@ class DriftVpnService : VpnService() {
         if (parsed != null && isBlockedLbsDomain(parsed.qname)) {
             val dnsReply = buildSinkholeDnsResponse(dnsQuery, parsed.questionEndOffset, parsed.qtype)
             if (dnsReply != null) {
-                val udpIpPacket = wrapIpv4UdpPacket(serverIp, 53, clientIp, clientPort, dnsReply)
-                writePacketSafe(output, udpIpPacket)
+                writePacketSafe(output, wrapIpv4UdpPacket(serverIp, 53, clientIp, clientPort, dnsReply))
             }
             return true
         }
@@ -251,8 +285,57 @@ class DriftVpnService : VpnService() {
         dnsExecutor.execute {
             val upstreamReply = forwardDnsQueryUpstream(dnsQuery)
             if (upstreamReply != null && isRunning) {
-                val udpIpPacket = wrapIpv4UdpPacket(serverIp, 53, clientIp, clientPort, upstreamReply)
-                writePacketSafe(output, udpIpPacket)
+                writePacketSafe(output, wrapIpv4UdpPacket(serverIp, 53, clientIp, clientPort, upstreamReply))
+            }
+        }
+        return true
+    }
+
+    private fun handleIpv6DnsPacket(packet: ByteArray, length: Int, output: FileOutputStream): Boolean {
+        if (length < 48) return false
+        if ((packet[6].toInt() and 0xFF) != 17) return false // UDP
+
+        // Check destination IPv6 == fd00:233:233::53
+        val expectedDst = byteArrayOf(
+            0xFD.toByte(), 0x00, 0x02, 0x33, 0x02, 0x33, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53
+        )
+        for (i in 0 until 16) {
+            if (packet[24 + i] != expectedDst[i]) return false
+        }
+
+        val dstPort = ((packet[42].toInt() and 0xFF) shl 8) or (packet[43].toInt() and 0xFF)
+        if (dstPort != 53) return false
+
+        val payloadLen = ((packet[4].toInt() and 0xFF) shl 8) or (packet[5].toInt() and 0xFF)
+        val totalLen = (40 + payloadLen).coerceAtMost(length)
+        val udpLen = (((packet[44].toInt() and 0xFF) shl 8) or (packet[45].toInt() and 0xFF))
+            .coerceAtMost(totalLen - 40)
+        if (udpLen <= 8) return true
+
+        val dnsLen = udpLen - 8
+        val dnsQuery = ByteArray(dnsLen)
+        System.arraycopy(packet, 48, dnsQuery, 0, dnsLen)
+
+        val clientIp = ByteArray(16)
+        System.arraycopy(packet, 8, clientIp, 0, 16)
+        val serverIp = ByteArray(16)
+        System.arraycopy(packet, 24, serverIp, 0, 16)
+        val clientPort = ((packet[40].toInt() and 0xFF) shl 8) or (packet[41].toInt() and 0xFF)
+
+        val parsed = parseDnsQuestion(dnsQuery)
+        if (parsed != null && isBlockedLbsDomain(parsed.qname)) {
+            val dnsReply = buildSinkholeDnsResponse(dnsQuery, parsed.questionEndOffset, parsed.qtype)
+            if (dnsReply != null) {
+                writePacketSafe(output, wrapIpv6UdpPacket(serverIp, 53, clientIp, clientPort, dnsReply))
+            }
+            return true
+        }
+
+        dnsExecutor.execute {
+            val upstreamReply = forwardDnsQueryUpstream(dnsQuery)
+            if (upstreamReply != null && isRunning) {
+                writePacketSafe(output, wrapIpv6UdpPacket(serverIp, 53, clientIp, clientPort, upstreamReply))
             }
         }
         return true
@@ -298,7 +381,6 @@ class DriftVpnService : VpnService() {
     private fun isBlockedLbsDomain(qname: String): Boolean {
         if (qname.isEmpty()) return false
         if (qname in RootUtils.LBS_HOSTS) return true
-        // 拦截腾讯地图定位相关全部子域名，但放行 vectorsdk.map.qq.com（矢量底图样式）
         if (qname.endsWith(".map.qq.com") && qname != "vectorsdk.map.qq.com") {
             return true
         }
@@ -307,58 +389,62 @@ class DriftVpnService : VpnService() {
 
     private fun buildSinkholeDnsResponse(query: ByteArray, questionEnd: Int, qtype: Int): ByteArray? {
         if (questionEnd > query.size) return null
-        val includeARecord = (qtype == 1)
-        val answerLen = if (includeARecord) 16 else 0
+        val answerLen = when (qtype) {
+            1 -> 16  // A -> 10.233.233.254
+            28 -> 28 // AAAA -> fd00:233:233::254
+            else -> 0
+        }
         val out = ByteArray(questionEnd + answerLen)
 
-        // Transaction ID
         out[0] = query[0]
         out[1] = query[1]
-        // Standard response, recursion available, NOERROR
         out[2] = 0x81.toByte()
         out[3] = 0x80.toByte()
-        // QDCOUNT = 1
         out[4] = 0x00
         out[5] = 0x01
-        // ANCOUNT = 1 (for A) or 0 (for AAAA/HTTPS so client immediately falls back to IPv4)
         out[6] = 0x00
-        out[7] = if (includeARecord) 0x01 else 0x00
-        // NSCOUNT = 0, ARCOUNT = 0
+        out[7] = if (answerLen > 0) 0x01 else 0x00
         out[8] = 0x00; out[9] = 0x00
         out[10] = 0x00; out[11] = 0x00
 
         System.arraycopy(query, 12, out, 12, questionEnd - 12)
 
-        if (includeARecord) {
+        if (qtype == 1) {
             var p = questionEnd
             out[p++] = 0xC0.toByte()
-            out[p++] = 0x0C // Pointer to QNAME at offset 12
-            out[p++] = 0x00
-            out[p++] = 0x01 // TYPE A
-            out[p++] = 0x00
-            out[p++] = 0x01 // CLASS IN
-            out[p++] = 0x00
-            out[p++] = 0x00
-            out[p++] = 0x00
-            out[p++] = 0x01 // TTL = 1s
-            out[p++] = 0x00
-            out[p++] = 0x04 // RDLENGTH = 4
-            // 10.233.233.254
+            out[p++] = 0x0C
+            out[p++] = 0x00; out[p++] = 0x01
+            out[p++] = 0x00; out[p++] = 0x01
+            out[p++] = 0x00; out[p++] = 0x00; out[p++] = 0x00; out[p++] = 0x01
+            out[p++] = 0x00; out[p++] = 0x04
             out[p++] = 10
             out[p++] = 233.toByte()
             out[p++] = 233.toByte()
             out[p] = 254.toByte()
+        } else if (qtype == 28) {
+            var p = questionEnd
+            out[p++] = 0xC0.toByte()
+            out[p++] = 0x0C
+            out[p++] = 0x00; out[p++] = 0x1C // TYPE AAAA (28)
+            out[p++] = 0x00; out[p++] = 0x01
+            out[p++] = 0x00; out[p++] = 0x00; out[p++] = 0x00; out[p++] = 0x01
+            out[p++] = 0x00; out[p++] = 0x10 // RDLENGTH = 16
+            val sink6 = byteArrayOf(
+                0xFD.toByte(), 0x00, 0x02, 0x33, 0x02, 0x33, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x54
+            )
+            System.arraycopy(sink6, 0, out, p, 16)
         }
         return out
     }
 
     private fun forwardDnsQueryUpstream(query: ByteArray): ByteArray? {
-        for (dnsIp in listOf("223.5.5.5", "119.29.29.29")) {
+        for (dnsIp in UPSTREAM_DNS_SERVERS) {
             var socket: DatagramSocket? = null
             try {
                 socket = DatagramSocket()
                 protect(socket)
-                socket.soTimeout = 1500
+                socket.soTimeout = 1400
                 val addr = InetAddress.getByName(dnsIp)
                 socket.send(DatagramPacket(query, query.size, addr, 53))
                 val buf = ByteArray(2048)
@@ -395,7 +481,7 @@ class DriftVpnService : VpnService() {
         writeUInt16(out, 2, totalLen)
         writeUInt16(out, 6, 0x4000)
         out[8] = 64
-        out[9] = 17 // UDP
+        out[9] = 17
         System.arraycopy(srcIp, 0, out, 12, 4)
         System.arraycopy(dstIp, 0, out, 16, 4)
         writeUInt16(out, 10, computeChecksum(out, 0, 20))
@@ -408,10 +494,37 @@ class DriftVpnService : VpnService() {
         return out
     }
 
+    private fun wrapIpv6UdpPacket(
+        srcIp: ByteArray,
+        srcPort: Int,
+        dstIp: ByteArray,
+        dstPort: Int,
+        payload: ByteArray
+    ): ByteArray {
+        val udpLen = 8 + payload.size
+        val totalLen = 40 + udpLen
+        val out = ByteArray(totalLen)
+
+        out[0] = 0x60.toByte()
+        writeUInt16(out, 4, udpLen)
+        out[6] = 17 // UDP
+        out[7] = 64
+        System.arraycopy(srcIp, 0, out, 8, 16)
+        System.arraycopy(dstIp, 0, out, 24, 16)
+
+        writeUInt16(out, 40, srcPort)
+        writeUInt16(out, 42, dstPort)
+        writeUInt16(out, 44, udpLen)
+        System.arraycopy(payload, 0, out, 48, payload.size)
+        val csum = computeIpv6TransportChecksum(out, 8, 24, 17, 40, udpLen)
+        writeUInt16(out, 46, if (csum == 0) 0xFFFF else csum)
+        return out
+    }
+
     /**
-     * 结合系统解析器与多组直连公共 DNS 同步提取域名的 IPv4 (A) 与 IPv6 (AAAA) 地址
+     * 结合系统解析器、多组公共 DNS 与 Tencent HTTPDNS (119.29.29.29/d) 同步收割目标域名的全量边缘 IP
      */
-    private fun resolveHostIps(host: String): Set<String> {
+    private fun resolveHostIps(host: String, queryTencentHttpDns: Boolean): Set<String> {
         val results = LinkedHashSet<String>()
         repeat(2) {
             try {
@@ -428,10 +541,38 @@ class DriftVpnService : VpnService() {
             }
         }
         for (dnsIp in UPSTREAM_DNS_SERVERS) {
-            results.addAll(queryDnsRecords(host, dnsIp, 1))  // A
-            results.addAll(queryDnsRecords(host, dnsIp, 28)) // AAAA
+            results.addAll(queryDnsRecords(host, dnsIp, 1))
+            results.addAll(queryDnsRecords(host, dnsIp, 28))
+        }
+        if (queryTencentHttpDns) {
+            results.addAll(queryTencentHttpDnsIps(host))
         }
         return results
+    }
+
+    private fun queryTencentHttpDnsIps(host: String): List<String> {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL("http://119.29.29.29/d?dn=$host").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 1200
+                readTimeout = 1200
+            }
+            if (conn.responseCode in 200..299) {
+                val body = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
+                    it.readText().trim()
+                }
+                body.split(';', ',')
+                    .map { it.trim() }
+                    .filter { it.matches(Regex("^\\d+\\.\\d+\\.\\d+\\.\\d+$")) }
+            } else {
+                emptyList()
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        } finally {
+            conn?.disconnect()
+        }
     }
 
     private fun queryDnsRecords(host: String, dnsServer: String, qtype: Int): List<String> {
@@ -534,10 +675,6 @@ class DriftVpnService : VpnService() {
         return out
     }
 
-    /**
-     * 解析发往定位域名黑洞路由的 IPv4 / IPv6 数据包，构造符合 RFC 793 / 792 / 4443 的
-     * TCP RST(/ACK) 或 ICMP(v6) Port Unreachable 响应包，实现免 Root 秒级连接拒止。
-     */
     private fun buildRejectReply(packet: ByteArray, length: Int): ByteArray? {
         if (length < 20) return null
         val version = (packet[0].toInt() ushr 4) and 0x0F
@@ -558,7 +695,7 @@ class DriftVpnService : VpnService() {
 
         val proto = packet[9].toInt() and 0xFF
         return when (proto) {
-            6 -> { // TCP -> RST / RST+ACK
+            6 -> {
                 if (totalLen < ihl + 20) return null
                 val tcpFlags = packet[ihl + 13].toInt() and 0xFF
                 if ((tcpFlags and 0x04) != 0) return null
@@ -604,7 +741,7 @@ class DriftVpnService : VpnService() {
                 writeUInt16(out, 36, computeIpv4TransportChecksum(out, 12, 16, 6, 20, 20))
                 out
             }
-            17 -> { // UDP -> ICMP Type 3 Code 3 (Port Unreachable)
+            17 -> {
                 if (totalLen < ihl + 8) return null
                 val quotedLen = (ihl + 8).coerceAtMost(totalLen)
                 val replyTotalLen = 20 + 8 + quotedLen
@@ -634,7 +771,7 @@ class DriftVpnService : VpnService() {
         val nextHeader = packet[6].toInt() and 0xFF
 
         return when (nextHeader) {
-            6 -> { // TCP -> RST / RST+ACK
+            6 -> {
                 if (totalLen < 60) return null
                 val tcpFlags = packet[53].toInt() and 0xFF
                 if ((tcpFlags and 0x04) != 0) return null
@@ -678,7 +815,7 @@ class DriftVpnService : VpnService() {
                 writeUInt16(out, 56, computeIpv6TransportChecksum(out, 8, 24, 6, 40, 20))
                 out
             }
-            17 -> { // UDP -> ICMPv6 Type 1 Code 4 (Port Unreachable)
+            17 -> {
                 if (totalLen < 48) return null
                 val quotedLen = totalLen.coerceAtMost(1232)
                 val icmpLen = 8 + quotedLen

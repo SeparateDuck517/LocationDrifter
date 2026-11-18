@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootMainLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#F8FAFC"
@@ -138,7 +139,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 降级模式/环境提醒横幅（点击整张卡片或右侧按钮均可打开向导/授权） -->
+        <!-- 降级模式/环境提醒横幅（键盘弹出搜索时自动折叠，防止挤压地图区域） -->
         <LinearLayout
             android:id="@+id/cardDegradedBanner"
             android:layout_width="match_parent"
@@ -203,20 +204,108 @@
         android:layout_height="1dp"
         android:background="#E2E8F0" />
 
-    <!-- 地图选点区域 -->
-    <WebView
-        android:id="@+id/webMap"
+    <!-- 地图选点区域 + 原生悬浮搜索栏（键盘弹出时自动隐藏底部面板，搜索框永不被遮挡） -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1">
+
+        <WebView
+            android:id="@+id/webMap"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="10dp"
+            android:layout_marginEnd="12dp"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_info_card"
+                android:elevation="4dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingTop="5dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="5dp">
+
+                <EditText
+                    android:id="@+id/etPlaceSearch"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:hint="搜地名（如 天安门）或输经纬度"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:singleLine="true"
+                    android:textColor="#0F172A"
+                    android:textColorHint="#94A3B8"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/btnClearSearch"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_status_pill"
+                    android:gravity="center"
+                    android:text="×"
+                    android:textColor="#475569"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/btnSearchPlace"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:background="@drawable/bg_btn_primary"
+                    android:backgroundTint="#2563EB"
+                    android:minWidth="54dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:stateListAnimator="@null"
+                    android:text="定位"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12.5sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <ScrollView
+                android:id="@+id/candidatesScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_info_card"
+                android:elevation="4dp"
+                android:maxHeight="190dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/candidatesList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+    </FrameLayout>
 
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:background="#E2E8F0" />
 
-    <!-- 底部卡片控制面板 -->
+    <!-- 底部卡片控制面板（输入法弹出时自动收起，留足搜索操作空间） -->
     <LinearLayout
+        android:id="@+id/bottomControlPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#FFFFFF"
@@ -332,7 +421,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 2x2 策略矩阵（单行防截断，点击锁定项自动弹出原因指引） -->
+        <!-- 2x2 策略矩阵 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

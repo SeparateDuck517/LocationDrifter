@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
@@ -17,10 +18,15 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewTreeObserver
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -67,7 +73,6 @@ class MainActivity : Activity() {
         private const val KEY_VPN_DEFAULT_MIGRATED_V2 = "vpn_default_migrated_v2"
         private val searchExecutor = Executors.newSingleThreadExecutor()
 
-        // 常见直辖市、省会及计划单列市 GCJ-02 离线兜底坐标（弱网或离线时搜索城市名依然秒级定位）
         private val BUILTIN_CITIES_GCJ02 = listOf(
             "北京" to (39.908823 to 116.397470),
             "上海" to (31.230416 to 121.473701),
@@ -130,6 +135,8 @@ class MainActivity : Activity() {
         val detail: String = ""
     )
 
+    private lateinit var rootMainLayout: LinearLayout
+    private lateinit var bottomControlPanel: LinearLayout
     private lateinit var tvSubtitleMode: TextView
     private lateinit var btnSwitchMode: TextView
     private lateinit var btnHelpGuide: TextView
@@ -140,6 +147,13 @@ class MainActivity : Activity() {
     private lateinit var tvDegradedTitle: TextView
     private lateinit var tvDegradedDesc: TextView
     private lateinit var btnDegradedAction: TextView
+
+    private lateinit var etPlaceSearch: EditText
+    private lateinit var btnClearSearch: TextView
+    private lateinit var btnSearchPlace: Button
+    private lateinit var candidatesScroll: ScrollView
+    private lateinit var candidatesList: LinearLayout
+
     private lateinit var tvAddress: TextView
     private lateinit var tvCoords: TextView
     private lateinit var btnCopyCoord: TextView
@@ -172,9 +186,28 @@ class MainActivity : Activity() {
     private var shizukuAutoSuppressScan = true
     private var isEnabled = false
     private var suppressCheckboxCallback = false
+    private var isImeVisible = false
 
     private var modeDialog: AlertDialog? = null
     private var modeDialogRefreshCallback: (() -> Unit)? = null
+
+    private val keyboardLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+        val rect = Rect()
+        rootMainLayout.getWindowVisibleDisplayFrame(rect)
+        val screenHeight = rootMainLayout.rootView.height
+        val keypadHeight = screenHeight - rect.bottom
+        val nowVisible = keypadHeight > dp(140)
+        if (nowVisible != isImeVisible) {
+            isImeVisible = nowVisible
+            if (isImeVisible) {
+                bottomControlPanel.visibility = View.GONE
+                cardDegradedBanner.visibility = View.GONE
+            } else {
+                bottomControlPanel.visibility = View.VISIBLE
+                updateEnvironmentUI()
+            }
+        }
+    }
 
     private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
         runOnUiThread {
@@ -222,6 +255,7 @@ class MainActivity : Activity() {
 
         registerShizukuListeners()
         initViews()
+        rootMainLayout.viewTreeObserver.addOnGlobalLayoutListener(keyboardLayoutListener)
         loadSavedState()
         bindCheckboxListeners()
         initWebView()
@@ -230,6 +264,10 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        try {
+            rootMainLayout.viewTreeObserver.removeOnGlobalLayoutListener(keyboardLayoutListener)
+        } catch (_: Throwable) {
+        }
         unregisterShizukuListeners()
         modeDialog?.dismiss()
         super.onDestroy()
@@ -292,6 +330,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        reconcileRuntimeStateIfStopped()
         refreshShizukuState()
         if (hasShizukuPermission && selectedMode == WorkMode.SHIZUKU && !RootUtils.isMockLocationAllowed(this) && !shizukuAutoGrantTried) {
             grantPermissionsViaShizukuAsync()
@@ -302,7 +341,30 @@ class MainActivity : Activity() {
         modeDialogRefreshCallback?.invoke()
     }
 
+    private fun reconcileRuntimeStateIfStopped() {
+        val cfg = ConfigManager.load(this)
+        val servicesAlive = MockLocationService.isRunning || DriftVpnService.isRunning
+        if (cfg.enabled && !servicesAlive) {
+            isEnabled = false
+            ConfigManager.save(this, cfg.copy(enabled = false), syncTmpWithRoot = false)
+            if (hasRoot) {
+                RootUtils.runRootTask {
+                    if (RootUtils.isRootAvailable()) {
+                        RootUtils.disableIptablesBlock()
+                    }
+                }
+            }
+            if (ShizukuHelper.hasPermission()) {
+                ShizukuHelper.runShizukuTask {
+                    ShizukuHelper.restoreAntiDriftScanSuppression(this)
+                }
+            }
+        }
+    }
+
     private fun initViews() {
+        rootMainLayout = findViewById(R.id.rootMainLayout)
+        bottomControlPanel = findViewById(R.id.bottomControlPanel)
         tvSubtitleMode = findViewById(R.id.tvSubtitleMode)
         btnSwitchMode = findViewById(R.id.btnSwitchMode)
         btnHelpGuide = findViewById(R.id.btnHelpGuide)
@@ -313,6 +375,13 @@ class MainActivity : Activity() {
         tvDegradedTitle = findViewById(R.id.tvDegradedTitle)
         tvDegradedDesc = findViewById(R.id.tvDegradedDesc)
         btnDegradedAction = findViewById(R.id.btnDegradedAction)
+
+        etPlaceSearch = findViewById(R.id.etPlaceSearch)
+        btnClearSearch = findViewById(R.id.btnClearSearch)
+        btnSearchPlace = findViewById(R.id.btnSearchPlace)
+        candidatesScroll = findViewById(R.id.candidatesScroll)
+        candidatesList = findViewById(R.id.candidatesList)
+
         tvAddress = findViewById(R.id.tvAddress)
         tvCoords = findViewById(R.id.tvCoords)
         btnCopyCoord = findViewById(R.id.btnCopyCoord)
@@ -326,6 +395,8 @@ class MainActivity : Activity() {
         btnFavorites = findViewById(R.id.btnFavorites)
         btnToggleDrift = findViewById(R.id.btnToggleDrift)
         btnUpdatePoint = findViewById(R.id.btnUpdatePoint)
+
+        setupNativeSearchBar()
 
         btnCopyCoord.setOnClickListener { copyCurrentCoordsToClipboard() }
         findViewById<Button>(R.id.btnInputCoord).setOnClickListener { showManualCoordDialog() }
@@ -371,6 +442,151 @@ class MainActivity : Activity() {
                 applyUpdatedCoordinates()
             }
         }
+    }
+
+    private fun setupNativeSearchBar() {
+        etPlaceSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                btnClearSearch.visibility = if (!s.isNullOrEmpty()) View.VISIBLE else View.GONE
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+
+        etPlaceSearch.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
+                triggerNativeSearch()
+                true
+            } else {
+                false
+            }
+        }
+
+        btnClearSearch.setOnClickListener {
+            etPlaceSearch.setText("")
+            hideSearchCandidates()
+            etPlaceSearch.requestFocus()
+        }
+
+        btnSearchPlace.setOnClickListener {
+            triggerNativeSearch()
+        }
+    }
+
+    private fun hideSoftKeyboard() {
+        try {
+            etPlaceSearch.clearFocus()
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(etPlaceSearch.windowToken, 0)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun hideSearchCandidates() {
+        candidatesScroll.visibility = View.GONE
+        candidatesList.removeAllViews()
+    }
+
+    private fun triggerNativeSearch() {
+        val q = etPlaceSearch.text.toString().trim()
+        if (q.isEmpty()) {
+            toast("请输入地名或经纬度")
+            return
+        }
+        hideSoftKeyboard()
+        hideSearchCandidates()
+
+        val coordRegex = Regex("^\\s*(-?\\d+(?:\\.\\d+)?)\\s*[,，\\s]+\\s*(-?\\d+(?:\\.\\d+)?)\\s*$")
+        val match = coordRegex.matchEntire(q)
+        if (match != null) {
+            val a = match.groupValues[1].toDoubleOrNull()
+            val b = match.groupValues[2].toDoubleOrNull()
+            if (a != null && b != null) {
+                var lat = a
+                var lng = b
+                if (kotlin.math.abs(a) > 60.0 && kotlin.math.abs(b) <= 60.0) {
+                    lng = a
+                    lat = b
+                }
+                val wgs = CoordTransform.gcj02ToWgs84(lat, lng)
+                applyPickedLocation(lat, lng, wgs.lat, wgs.lng, "手动坐标")
+                syncMarkerToWebMap(lat, lng, "手动坐标")
+                if (isEnabled) {
+                    applyUpdatedCoordinates()
+                }
+                return
+            }
+        }
+
+        btnSearchPlace.isEnabled = false
+        btnSearchPlace.text = "搜索中"
+        performPlaceSearch(q)
+    }
+
+    private fun showNativeCandidates(candidates: List<PlaceSearchResult>) {
+        val first = candidates.first()
+        val firstWgs = CoordTransform.gcj02ToWgs84(first.gcjLat, first.gcjLng)
+        applyPickedLocation(first.gcjLat, first.gcjLng, firstWgs.lat, firstWgs.lng, first.label)
+        syncMarkerToWebMap(first.gcjLat, first.gcjLng, first.label)
+        if (isEnabled) {
+            applyUpdatedCoordinates(showToast = false)
+        }
+
+        if (candidates.size <= 1) {
+            hideSearchCandidates()
+            return
+        }
+
+        candidatesList.removeAllViews()
+        for (i in candidates.indices) {
+            val item = candidates[i]
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(9), dp(12), dp(9))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    val wgs = CoordTransform.gcj02ToWgs84(item.gcjLat, item.gcjLng)
+                    applyPickedLocation(item.gcjLat, item.gcjLng, wgs.lat, wgs.lng, item.label)
+                    syncMarkerToWebMap(item.gcjLat, item.gcjLng, item.label)
+                    hideSearchCandidates()
+                    if (isEnabled) {
+                        applyUpdatedCoordinates()
+                    }
+                }
+            }
+            val tvTitle = TextView(this).apply {
+                text = item.label
+                setTextColor(Color.parseColor("#0F172A"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            val tvSub = TextView(this).apply {
+                text = item.detail.ifBlank {
+                    String.format(Locale.US, "%.5f, %.5f", item.gcjLat, item.gcjLng)
+                }
+                setTextColor(Color.parseColor("#64748B"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(2), 0, 0)
+            }
+            row.addView(tvTitle)
+            row.addView(tvSub)
+            candidatesList.addView(row)
+
+            if (i < candidates.lastIndex) {
+                val divider = View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(1)
+                    )
+                    setBackgroundColor(Color.parseColor("#F1F5F9"))
+                }
+                candidatesList.addView(divider)
+            }
+        }
+        candidatesScroll.visibility = View.VISIBLE
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -440,7 +656,14 @@ class MainActivity : Activity() {
 
         suppressCheckboxCallback = true
         val cfg = ConfigManager.load(this)
-        isEnabled = cfg.enabled
+        val servicesAlive = MockLocationService.isRunning || DriftVpnService.isRunning
+        if (cfg.enabled && !servicesAlive) {
+            // 后台被清理后重新打开时，自动复位为未开启状态
+            isEnabled = false
+            ConfigManager.save(this, cfg.copy(enabled = false), syncTmpWithRoot = false)
+        } else {
+            isEnabled = cfg.enabled
+        }
         currentGcjLat = cfg.gcjLat
         currentGcjLng = cfg.gcjLng
         currentWgsLat = cfg.wgsLat
@@ -451,7 +674,6 @@ class MainActivity : Activity() {
         cbAntiDrift.isChecked = cfg.blockNetworkDrift
         cbIptables.isChecked = cfg.enableIptables
 
-        // 升级迁移：若此前旧版本曾将免 Root / Shizuku 模式的默认 VPN 设为 false，自动恢复为推荐开启
         val migratedV2 = uiPrefs.getBoolean(KEY_VPN_DEFAULT_MIGRATED_V2, false)
         if (!migratedV2 && (selectedMode == WorkMode.SHIZUKU || selectedMode == WorkMode.ROOTLESS_BASIC)) {
             cbVpn.isChecked = true
@@ -531,9 +753,15 @@ class MainActivity : Activity() {
             val rootOk = RootUtils.isRootAvailable()
             if (rootOk) {
                 RootUtils.grantMockAndLocationPermissions(packageName)
+                if (!isEnabled) {
+                    RootUtils.disableIptablesBlock()
+                }
             } else if (ShizukuHelper.hasPermission()) {
                 ShizukuHelper.grantMockAndLocationPermissions(this)
                 shizukuAutoGrantTried = true
+                if (!isEnabled) {
+                    ShizukuHelper.restoreAntiDriftScanSuppression(this)
+                }
             }
             runOnUiThread {
                 hasRoot = rootOk
@@ -627,7 +855,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.text = "LSPosed: 待重启 ›"
                     tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
 
-                    cardDegradedBanner.visibility = View.VISIBLE
+                    cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "⚠️ LSPosed 模块已激活，重启手机后正式生效"
                     tvDegradedDesc.text =
                         "模块开关已打开，但系统框架 (android) 尚未加载 Hook。请重启一次手机，否则底层基站/Wi-Fi隔离与 Mock 标记抹除不会生效。"
@@ -642,7 +870,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.text = "LSPosed: 未激活 ›"
                     tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
 
-                    cardDegradedBanner.visibility = View.VISIBLE
+                    cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "已获取 Root，但 LSPosed 模块尚未激活"
                     tvDegradedDesc.text =
                         "当前仅可启用系统模拟定位与内核阻断，无法抹除 Mock 标记或底层隔离基站/Wi-Fi。点击查看激活步骤，或点「切换模式」。"
@@ -657,7 +885,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.text = "Root: 未获取 ›"
                     tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
 
-                    cardDegradedBanner.visibility = View.VISIBLE
+                    cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "⚠️ 未检测到 Root 权限"
                     tvDegradedDesc.text =
                         "当前设备无 Root，无法运行系统框架 Hook。建议点击右上角「切换模式」选择「Shizuku 增强模式」或「纯免 Root 模式」。"
@@ -676,7 +904,7 @@ class MainActivity : Activity() {
                 tvRootStatus.text = "模式: Shizuku增强 ›"
                 tvRootStatus.setTextColor(Color.parseColor("#2563EB"))
 
-                cardDegradedBanner.visibility = View.VISIBLE
+                cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                 if (hasShizukuPermission) {
                     when {
                         mockAllowed -> {
@@ -684,7 +912,7 @@ class MainActivity : Activity() {
                             tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                             tvDegradedTitle.text = "Shizuku 免 Root 增强模式已就绪"
                             tvDegradedDesc.text =
-                                "已自动放行模拟位置；漂移时自动关闭 Wi-Fi/蓝牙扫描，配合内置 DNS 分流与双栈 RST-VPN 阻断微信/高德网络定位（建议勾选 VPN阻断）。"
+                                "已自动放行模拟位置；漂移时自动关闭 Wi-Fi/蓝牙扫描，配合双栈 DNS 分流与 RST-VPN 阻断微信/高德网络定位。"
                             btnDegradedAction.text = "模式对比 ›"
                         }
                         !shizukuAutoGrantTried -> {
@@ -746,13 +974,13 @@ class MainActivity : Activity() {
                 tvRootStatus.text = "模式: 纯免Root基础 ›"
                 tvRootStatus.setTextColor(Color.parseColor("#D97706"))
 
-                cardDegradedBanner.visibility = View.VISIBLE
+                cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                 if (mockAllowed) {
                     tvXposedStatus.text = "模拟定位: 已授权 ✓"
                     tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                     tvDegradedTitle.text = "纯免 Root 基础模式已就绪"
                     tvDegradedDesc.text =
-                        "已启用系统GPS + DNS分流双栈RST-VPN（主动回发 TCP RST 阻断网络定位接口，支持微信与高德地图）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描。"
+                        "已启用系统GPS + 双栈DNS分流RST-VPN（主动回发 TCP RST 阻断网络定位接口，支持微信与高德地图）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描。"
                     btnDegradedAction.text = "防漂移指南 ›"
                 } else {
                     tvXposedStatus.text = "模拟定位: 未设置 ›"
@@ -797,9 +1025,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 启动时及点击「切换模式」时弹出的三模式选择与差异对比界面
-     */
     private fun showModeSelectionDialog(isAutoStartup: Boolean) {
         modeDialog?.dismiss()
         refreshShizukuState()
@@ -1308,9 +1533,6 @@ class MainActivity : Activity() {
         container.addView(card)
     }
 
-    /**
-     * 统一结构化环境自检与使用指引弹窗（自动适配当前所选模式）
-     */
     private fun showEnvironmentGuideDialog() {
         val mockAllowed = RootUtils.isMockLocationAllowed(this)
         refreshShizukuState()
@@ -1375,7 +1597,7 @@ class MainActivity : Activity() {
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
                 addStatusCheckRow(statusCard, "3. 自动关Wi-Fi/蓝牙扫描", "支持 (停止漂移自动恢复)", "#059669")
-                addStatusCheckRow(statusCard, "4. DNS分流 + 双栈RST-VPN", "已适配微信/高德网络定位阻断", "#059669")
+                addStatusCheckRow(statusCard, "4. 双栈DNS分流 + RST-VPN", "已适配微信/高德网络定位阻断", "#059669")
                 addStatusCheckRow(statusCard, "5. 抹除isMock / 基站隔离", "不支持 (受SELinux隔离限制)", "#64748B")
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1386,7 +1608,7 @@ class MainActivity : Activity() {
                     if (mockAllowed) "已授权 ✓" else "未设置 (必须配置) ✗",
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
-                addStatusCheckRow(statusCard, "2. DNS分流 + 双栈RST-VPN", "已适配微信/高德网络定位阻断", "#059669")
+                addStatusCheckRow(statusCard, "2. 双栈DNS分流 + RST-VPN", "已适配微信/高德网络定位阻断", "#059669")
                 addStatusCheckRow(statusCard, "3. 抹除isMock / 基站隔离", "不支持 (需Root+LSPosed)", "#64748B")
             }
         }
@@ -1416,7 +1638,7 @@ class MainActivity : Activity() {
                     root,
                     "3",
                     "保持开启「VPN阻断(推荐)」以支持微信定位",
-                    "局部 RST-VPN 内置本地 DNS 拦截与双栈主机路由，直接阻断腾讯/高德/百度网络定位接口并放行微信聊天通道，迫使微信内置定位 SDK 回落至虚拟 GPS。"
+                    "局部 RST-VPN 内置 IPv4+IPv6 双栈 DNS 拦截与 Tencent HTTPDNS 路由拒止，同时放行微信聊天通道，迫使微信内置定位 SDK 回落至虚拟 GPS。"
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1431,7 +1653,7 @@ class MainActivity : Activity() {
                     root,
                     "2",
                     "保持开启「系统GPS注入 + VPN阻断(推荐)」",
-                    "局部 VPN 内置 DNS 分流与双栈 RST 拒止，阻断腾讯/高德/百度网络定位接口并放行微信聊天通道，可迫使微信等应用快速回落至虚拟 GPS。"
+                    "局部 VPN 内置双栈 DNS 分流与 RST 拒止，阻断腾讯/高德/百度网络定位接口并放行微信聊天通道，可迫使微信等应用快速回落至虚拟 GPS。"
                 )
                 addStepCard(
                     root,
@@ -2208,21 +2430,13 @@ class MainActivity : Activity() {
 
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                btnSearchPlace.isEnabled = true
+                btnSearchPlace.text = "定位"
                 if (candidates.isNotEmpty()) {
-                    val arr = JSONArray()
-                    candidates.take(5).forEach { c ->
-                        arr.put(JSONObject().apply {
-                            put("gcjLat", c.gcjLat)
-                            put("gcjLng", c.gcjLng)
-                            put("label", c.label)
-                            put("detail", c.detail)
-                        })
-                    }
-                    val quoted = JSONObject.quote(arr.toString())
-                    webMap.evaluateJavascript("window.onSearchCandidates($quoted)", null)
+                    showNativeCandidates(candidates.take(5))
                 } else {
-                    val err = escapeJsString("未找到「$query」，可尝试更详细地名或直接输入经纬度")
-                    webMap.evaluateJavascript("window.onSearchResult(false, 0, 0, '', '$err')", null)
+                    hideSearchCandidates()
+                    toast("未找到「$query」，可尝试更详细地名或直接输入经纬度")
                 }
             }
         }
@@ -2242,6 +2456,7 @@ class MainActivity : Activity() {
             address: String
         ) {
             runOnUiThread {
+                hideSearchCandidates()
                 applyPickedLocation(gcjLat, gcjLng, wgsLat, wgsLng, address)
             }
         }
@@ -2250,14 +2465,6 @@ class MainActivity : Activity() {
         fun onMapReady() {
             runOnUiThread {
                 syncMarkerToWebMap(currentGcjLat, currentGcjLng, currentAddress)
-            }
-        }
-
-        @JavascriptInterface
-        fun searchPlace(query: String) {
-            val q = query.trim()
-            if (q.isNotEmpty()) {
-                performPlaceSearch(q)
             }
         }
 
