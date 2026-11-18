@@ -18,14 +18,23 @@ android {
     signingConfigs {
         release {
             def keystorePath = System.getenv("KEYSTORE_FILE")
-            if (keystorePath != null && file(keystorePath).exists()) {
-                storeFile file(keystorePath)
-                storePassword System.getenv("STORE_PASSWORD")
-                keyAlias System.getenv("KEY_ALIAS")
-                keyPassword System.getenv("KEY_PASSWORD")
-                enableV1Signing true
-                enableV2Signing true
-                enableV3Signing true
+            def storePwd = System.getenv("STORE_PASSWORD")
+            def aliasName = System.getenv("KEY_ALIAS")
+            def keyPwd = System.getenv("KEY_PASSWORD")
+            if (keystorePath != null && !keystorePath.trim().isEmpty()
+                    && storePwd != null && !storePwd.isEmpty()
+                    && aliasName != null && !aliasName.trim().isEmpty()
+                    && keyPwd != null && !keyPwd.isEmpty()) {
+                def ksFile = file(keystorePath.trim())
+                if (ksFile.isFile() && ksFile.length() > 0) {
+                    storeFile ksFile
+                    storePassword storePwd
+                    keyAlias aliasName.trim()
+                    keyPassword keyPwd
+                    enableV1Signing true
+                    enableV2Signing true
+                    enableV3Signing true
+                }
             }
         }
     }
