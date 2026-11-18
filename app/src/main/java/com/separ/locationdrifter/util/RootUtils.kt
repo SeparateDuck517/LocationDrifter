@@ -141,6 +141,7 @@ object RootUtils {
 
     private const val IPTABLES_CHAIN = "LOC_DRIFT_BLOCK"
 
+    // 网络定位（基站/Wi-Fi 指纹）服务端域名列表
     val LBS_HOSTS = listOf(
         "lbs.map.qq.com",
         "loc.map.qq.com",
@@ -152,7 +153,8 @@ object RootUtils {
         "ofloc.map.baidu.com"
     )
 
-    val PROTECTED_TENCENT_HOSTS = listOf(
+    // 核心长短连接及解析节点域名列表（避免三层 IP 拦截与共享边缘节点冲突）
+    val PROTECTED_IM_HOSTS = listOf(
         "szshort.weixin.qq.com",
         "szlong.weixin.qq.com",
         "szextshort.weixin.qq.com",
@@ -164,7 +166,7 @@ object RootUtils {
         "dns.weixin.qq.com"
     )
 
-    private fun queryTencentHttpDns(host: String): List<String> {
+    private fun queryHttpDns(host: String): List<String> {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL("http://119.29.29.29/d?dn=$host").openConnection() as HttpURLConnection).apply {
@@ -267,13 +269,11 @@ object RootUtils {
     }
 
     /**
-     * 兼容 Android 13–16 GKI 内核的 iptables / ip6tables 阻断规则：
-     * 使用内核原生 DROP 目标（不依赖 GKI 裁剪掉的 xt_string / ipt_REJECT 模块），
-     * 并结合 Tencent HTTPDNS 与多组公共 DNS 收割边缘节点 IP，同时放行微信核心 mmtls 聊天节点。
+     * 兼容 Android 13–16 GKI 内核的 iptables / ip6tables 阻断规则
      */
     fun enableIptablesBlock(): Boolean {
         val protectedIps = HashSet<String>()
-        for (host in PROTECTED_TENCENT_HOSTS) {
+        for (host in PROTECTED_IM_HOSTS) {
             try {
                 InetAddress.getAllByName(host).forEach { addr ->
                     addr.hostAddress?.substringBefore('%')?.let { protectedIps.add(it) }
@@ -301,7 +301,7 @@ object RootUtils {
                     if (ip !in protectedIps) ipv4s.add(ip)
                 }
             }
-            queryTencentHttpDns(host).forEach { ip ->
+            queryHttpDns(host).forEach { ip ->
                 if (ip !in protectedIps) ipv4s.add(ip)
             }
         }

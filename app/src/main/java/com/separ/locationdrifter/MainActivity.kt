@@ -202,7 +202,7 @@ class MainActivity : Activity() {
     private var startupDialogShown = false
     private var selectedMode: WorkMode = WorkMode.ROOTLESS_BASIC
     private var shizukuAutoSuppressScan = true
-    private var shizukuIsolateTargetApps = true
+    private var shizukuIsolateTargetApps = false
     private var isEnabled = false
     private var suppressCheckboxCallback = false
     private var isImeVisible = false
@@ -637,6 +637,13 @@ class MainActivity : Activity() {
             }
 
             if (selectedMode == WorkMode.SHIZUKU && buttonView.id == R.id.cbAntiDrift) {
+                if (isChecked && ShizukuHelper.getTargetApps(this).isEmpty()) {
+                    suppressCheckboxCallback = true
+                    cbAntiDrift.isChecked = false
+                    suppressCheckboxCallback = false
+                    showTargetAppsConfigDialog()
+                    return@OnCheckedChangeListener
+                }
                 shizukuIsolateTargetApps = isChecked
                 getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
@@ -647,12 +654,12 @@ class MainActivity : Activity() {
                         if (isChecked) {
                             val count = ShizukuHelper.applyTargetAppLocationIsolation(this)
                             runOnUiThread {
-                                toast("已隔离 $count 个目标应用扫描并重启生效")
+                                toast("已隔离 $count 个指定应用的硬件扫描")
                             }
                         } else {
                             ShizukuHelper.restoreTargetAppLocationIsolation(this)
                             runOnUiThread {
-                                toast("已恢复目标应用原始权限")
+                                toast("已恢复指定应用原始权限")
                             }
                         }
                     }
@@ -700,7 +707,7 @@ class MainActivity : Activity() {
             selectedMode = it
         }
         shizukuAutoSuppressScan = uiPrefs.getBoolean(KEY_SHIZUKU_AUTO_SUPPRESS_SCAN, true)
-        shizukuIsolateTargetApps = uiPrefs.getBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, true)
+        shizukuIsolateTargetApps = uiPrefs.getBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, false)
 
         suppressCheckboxCallback = true
         val cfg = ConfigManager.load(this)
@@ -758,12 +765,13 @@ class MainActivity : Activity() {
                 setCheckboxState(cbVpn, enabled = true, checked = false, label = "VPN阻断")
             }
             WorkMode.SHIZUKU -> {
+                val hasTargets = ShizukuHelper.getTargetApps(this).isNotEmpty()
                 setCheckboxState(cbSystemMock, enabled = true, checked = true, label = "系统GPS注入")
                 setCheckboxState(
                     cbAntiDrift,
                     enabled = true,
-                    checked = shizukuIsolateTargetApps,
-                    label = "隔离微信WiFi/基站"
+                    checked = shizukuIsolateTargetApps && hasTargets,
+                    label = "隔离应用扫描"
                 )
                 setCheckboxState(
                     cbIptables,
@@ -872,6 +880,16 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun applyPillStyle(tv: TextView, textColorHex: String, bgColorHex: String, strokeColorHex: String) {
+        tv.setTextColor(Color.parseColor(textColorHex))
+        tv.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(999).toFloat()
+            setColor(Color.parseColor(bgColorHex))
+            setStroke(dp(1), Color.parseColor(strokeColorHex))
+        }
+    }
+
     private fun updateEnvironmentUI() {
         hasXposed = ModuleStatus.isModuleActive()
         hasSystemHookActive = isSystemHookReadyThisBoot()
@@ -884,9 +902,9 @@ class MainActivity : Activity() {
 
         if (!rootCheckCompleted) {
             tvRootStatus.text = "模式: 检测中..."
-            tvRootStatus.setTextColor(Color.parseColor("#475569"))
+            applyPillStyle(tvRootStatus, "#475569", "#F8FAFC", "#E2E8F0")
             tvXposedStatus.text = "权限: 检测中..."
-            tvXposedStatus.setTextColor(Color.parseColor("#475569"))
+            applyPillStyle(tvXposedStatus, "#475569", "#F8FAFC", "#E2E8F0")
             return
         }
 
@@ -901,15 +919,18 @@ class MainActivity : Activity() {
 
         when (selectedMode) {
             WorkMode.ROOT_LSPOSED -> {
-                tvRootStatus.text = if (hasRoot) "模式: Root完整版 ✓" else "模式: Root完整版(缺Root)"
-                tvRootStatus.setTextColor(
-                    Color.parseColor(if (hasRoot) "#059669" else "#DC2626")
-                )
+                if (hasRoot) {
+                    tvRootStatus.text = "模式: Root完整版 ✓"
+                    applyPillStyle(tvRootStatus, "#059669", "#ECFDF5", "#A7F3D0")
+                } else {
+                    tvRootStatus.text = "模式: Root完整版(缺Root)"
+                    applyPillStyle(tvRootStatus, "#DC2626", "#FEF2F2", "#FECACA")
+                }
 
                 if (hasRoot && hasSystemHookActive) {
                     tvSubtitleMode.text = "系统级防漂移 · 零三方注入"
                     tvXposedStatus.text = "LSPosed: 已激活 ✓"
-                    tvXposedStatus.setTextColor(Color.parseColor("#059669"))
+                    applyPillStyle(tvXposedStatus, "#059669", "#ECFDF5", "#A7F3D0")
                     cardDegradedBanner.visibility = View.GONE
 
                     setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
@@ -919,7 +940,7 @@ class MainActivity : Activity() {
                 } else if (hasRoot && hasXposed && !hasSystemHookActive) {
                     tvSubtitleMode.text = "LSPosed 已开启 · 重启后生效"
                     tvXposedStatus.text = "LSPosed: 待重启 ›"
-                    tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+                    applyPillStyle(tvXposedStatus, "#D97706", "#FFFBEB", "#FDE68A")
 
                     cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "LSPosed 已开启，重启手机后正式生效"
@@ -933,7 +954,7 @@ class MainActivity : Activity() {
                 } else if (hasRoot && !hasXposed) {
                     tvSubtitleMode.text = "Root 已就绪 · 待激活 LSPosed"
                     tvXposedStatus.text = "LSPosed: 未激活 ›"
-                    tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+                    applyPillStyle(tvXposedStatus, "#D97706", "#FFFBEB", "#FDE68A")
 
                     cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "LSPosed 模块未激活"
@@ -947,7 +968,7 @@ class MainActivity : Activity() {
                 } else {
                     tvSubtitleMode.text = "未获取 Root · 可切换免 Root 模式"
                     tvXposedStatus.text = "Root: 未获取 ›"
-                    tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
+                    applyPillStyle(tvXposedStatus, "#DC2626", "#FEF2F2", "#FECACA")
 
                     cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "未检测到 Root 权限"
@@ -965,22 +986,22 @@ class MainActivity : Activity() {
                 val mockAllowed = RootUtils.isMockLocationAllowed(this)
                 tvSubtitleMode.text = "免 Root · Shizuku 增强模式"
                 tvRootStatus.text = "模式: Shizuku增强 ›"
-                tvRootStatus.setTextColor(Color.parseColor("#2563EB"))
+                applyPillStyle(tvRootStatus, "#1D4ED8", "#EFF6FF", "#BFDBFE")
 
                 cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                 if (hasShizukuPermission) {
                     when {
                         mockAllowed -> {
                             tvXposedStatus.text = "Shizuku: 已就绪 ✓"
-                            tvXposedStatus.setTextColor(Color.parseColor("#059669"))
+                            applyPillStyle(tvXposedStatus, "#059669", "#ECFDF5", "#A7F3D0")
                             tvDegradedTitle.text = "Shizuku 增强模式已就绪"
                             tvDegradedDesc.text =
-                                "自动放行模拟位置、关后台扫描，开启漂移时自动清缓存并隔离目标应用（${ShizukuHelper.getTargetAppsSummary(this)}）硬件扫描。"
+                                "已自动放行模拟位置并关闭后台扫描，支持按需配置指定应用扫描隔离（${ShizukuHelper.getTargetAppsSummary(this)}）。"
                             btnDegradedAction.text = "配置隔离 ›"
                         }
                         !shizukuAutoGrantTried -> {
                             tvXposedStatus.text = "Shizuku: 配置中..."
-                            tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+                            applyPillStyle(tvXposedStatus, "#D97706", "#FFFBEB", "#FDE68A")
                             tvDegradedTitle.text = "正在自动放行模拟位置..."
                             tvDegradedDesc.text = "正在通过 Shizuku 配置模拟位置权限，请稍候。"
                             btnDegradedAction.text = "模式对比 ›"
@@ -988,7 +1009,7 @@ class MainActivity : Activity() {
                         }
                         else -> {
                             tvXposedStatus.text = "模拟位置: 需手动设 ›"
-                            tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
+                            applyPillStyle(tvXposedStatus, "#DC2626", "#FEF2F2", "#FECACA")
                             tvDegradedTitle.text = "需手动设置模拟位置应用"
                             tvDegradedDesc.text = "当前系统限制自动授权，请在「开发者选项」中手动选择本应用。"
                             btnDegradedAction.text = "去开发者选项 ›"
@@ -996,14 +1017,14 @@ class MainActivity : Activity() {
                     }
                 } else if (hasShizukuBinder) {
                     tvXposedStatus.text = "Shizuku: 待授权 ›"
-                    tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+                    applyPillStyle(tvXposedStatus, "#D97706", "#FFFBEB", "#FDE68A")
                     tvDegradedTitle.text = "Shizuku 运行中，请授予权限"
-                    tvDegradedDesc.text = "点击右侧「立即授权」即可自动放行模拟位置与目标应用硬件隔离。"
+                    tvDegradedDesc.text = "点击右侧「立即授权」即可自动放行模拟位置与后台扫描管理。"
                     btnDegradedAction.text = "立即授权 ›"
                 } else {
                     val installed = ShizukuHelper.isShizukuInstalled(this)
                     tvXposedStatus.text = if (installed) "Shizuku: 未启动 ›" else "Shizuku: 未安装 ›"
-                    tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
+                    applyPillStyle(tvXposedStatus, "#DC2626", "#FEF2F2", "#FECACA")
                     tvDegradedTitle.text = if (installed) "Shizuku 服务未启动" else "未安装 Shizuku"
                     tvDegradedDesc.text = if (installed) {
                         "请打开 Shizuku 通过无线调试启动服务后返回。"
@@ -1013,12 +1034,13 @@ class MainActivity : Activity() {
                     btnDegradedAction.text = if (installed) "打开Shizuku ›" else "获取Shizuku ›"
                 }
 
+                val hasTargets = ShizukuHelper.getTargetApps(this).isNotEmpty()
                 setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
                 setCheckboxState(
                     cbAntiDrift,
                     enabled = true,
-                    checked = shizukuIsolateTargetApps,
-                    label = "隔离微信WiFi/基站"
+                    checked = shizukuIsolateTargetApps && hasTargets,
+                    label = "隔离应用扫描"
                 )
                 setCheckboxState(
                     cbIptables,
@@ -1033,18 +1055,18 @@ class MainActivity : Activity() {
                 val mockAllowed = RootUtils.isMockLocationAllowed(this)
                 tvSubtitleMode.text = "纯免 Root · 基础模式"
                 tvRootStatus.text = "模式: 纯免Root基础 ›"
-                tvRootStatus.setTextColor(Color.parseColor("#D97706"))
+                applyPillStyle(tvRootStatus, "#D97706", "#FFFBEB", "#FDE68A")
 
                 cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                 if (mockAllowed) {
                     tvXposedStatus.text = "模拟定位: 已授权 ✓"
-                    tvXposedStatus.setTextColor(Color.parseColor("#059669"))
+                    applyPillStyle(tvXposedStatus, "#059669", "#ECFDF5", "#A7F3D0")
                     tvDegradedTitle.text = "纯免 Root 模式已就绪"
-                    tvDegradedDesc.text = "建议：1.系统位置设置关闭 Wi-Fi/蓝牙扫描；2.彻底划掉目标应用后再开启漂移。"
+                    tvDegradedDesc.text = "已启用系统模拟定位与局部 DNS 阻断；建议在系统位置设置关闭 Wi-Fi/蓝牙扫描。"
                     btnDegradedAction.text = "防漂移指南 ›"
                 } else {
                     tvXposedStatus.text = "模拟定位: 未设置 ›"
-                    tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
+                    applyPillStyle(tvXposedStatus, "#DC2626", "#FEF2F2", "#FECACA")
                     tvDegradedTitle.text = "需先在开发者选项授权模拟位置"
                     tvDegradedDesc.text = "请在「开发者选项 → 选择模拟位置信息应用」中选中本应用。"
                     btnDegradedAction.text = "去授权设置 ›"
@@ -1085,7 +1107,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTargetAppsConfigDialog() {
-        val currentList = ShizukuHelper.getTargetApps(this).toMutableList()
+        val currentList = ShizukuHelper.getTargetApps(this)
         val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1094,7 +1116,7 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         val tvHint = TextView(this).apply {
-            text = "开启漂移时通过 Shizuku 临时限制所选应用的 Wi-Fi/蓝牙扫描权限、清空定位 SDK 缓存并重载进程（保留 GPS 权限，不影响聊天），停止漂移自动恢复："
+            text = "开启漂移时通过 Shizuku 临时限制所选应用包名的 Wi-Fi 与蓝牙扫描权限（保留 GPS 权限通道），停止漂移自动恢复："
             setTextColor(Color.parseColor("#475569"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setLineSpacing(dp(2).toFloat(), 1f)
@@ -1102,46 +1124,26 @@ class MainActivity : Activity() {
         }
         root.addView(tvHint)
 
-        val presetCheckboxes = ArrayList<Pair<String, CheckBox>>()
-        for (preset in ShizukuHelper.PRESET_TARGET_APPS) {
-            val cb = CheckBox(this).apply {
-                text = "${preset.displayName} (${preset.packageName})"
-                isChecked = preset.packageName in currentList
-                setTextColor(Color.parseColor("#0F172A"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                buttonTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#2563EB"))
-            }
-            root.addView(cb)
-            presetCheckboxes.add(preset.packageName to cb)
-        }
-
-        val customPackages = currentList.filter { pkg ->
-            ShizukuHelper.PRESET_TARGET_APPS.none { it.packageName == pkg }
-        }
-
         val tvCustomLabel = TextView(this).apply {
-            text = "附加自定义应用包名（多个可用逗号分隔）："
+            text = "目标应用包名（多个包名可用逗号或换行分隔，留空则不隔离）："
             setTextColor(Color.parseColor("#334155"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setPadding(0, dp(10), 0, dp(4))
+            setPadding(0, dp(4), 0, dp(6))
         }
         root.addView(tvCustomLabel)
 
         val etCustom = EditText(this).apply {
-            hint = "如 com.autonavi.minimap"
-            setText(customPackages.joinToString(", "))
+            hint = "如 com.example.app"
+            setText(currentList.joinToString(", "))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         }
         root.addView(etCustom)
 
         AlertDialog.Builder(this)
-            .setTitle("配置硬件定位感知隔离应用")
+            .setTitle("配置扫描隔离目标包名")
             .setView(scroll)
             .setPositiveButton("保存") { _, _ ->
                 val result = LinkedHashSet<String>()
-                for ((pkg, box) in presetCheckboxes) {
-                    if (box.isChecked) result.add(pkg)
-                }
                 etCustom.text.toString()
                     .split(Regex("[,，\\s]+"))
                     .map { it.trim() }
@@ -1150,14 +1152,25 @@ class MainActivity : Activity() {
 
                 val finalList = result.toList()
                 ShizukuHelper.setTargetApps(this, finalList)
+                shizukuIsolateTargetApps = finalList.isNotEmpty()
+                getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, shizukuIsolateTargetApps)
+                    .apply()
                 updateEnvironmentUI()
 
-                if (isEnabled && selectedMode == WorkMode.SHIZUKU && shizukuIsolateTargetApps) {
+                if (isEnabled && selectedMode == WorkMode.SHIZUKU) {
                     ShizukuHelper.runShizukuTask {
                         ShizukuHelper.restoreTargetAppLocationIsolation(this)
-                        val count = ShizukuHelper.applyTargetAppLocationIsolation(this, finalList)
-                        runOnUiThread {
-                            toast("已更新并隔离 $count 个目标应用")
+                        if (finalList.isNotEmpty()) {
+                            val count = ShizukuHelper.applyTargetAppLocationIsolation(this, finalList)
+                            runOnUiThread {
+                                toast("已更新并隔离 $count 个指定应用")
+                            }
+                        } else {
+                            runOnUiThread {
+                                toast("已清除隔离目标并恢复权限")
+                            }
                         }
                     }
                 } else {
@@ -1207,7 +1220,7 @@ class MainActivity : Activity() {
         ): ModeCardRefs {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(13), dp(11), dp(13), dp(11))
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1238,7 +1251,7 @@ class MainActivity : Activity() {
             val statusBadge = TextView(this).apply {
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
                 typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(7), dp(2), dp(7), dp(2))
+                setPadding(dp(8), dp(2.5f.toInt()), dp(8), dp(2.5f.toInt()))
             }
 
             topRow.addView(radio)
@@ -1281,9 +1294,9 @@ class MainActivity : Activity() {
             WorkMode.ROOT_LSPOSED,
             "1. Root + LSPosed 完整模式",
             "最强防漂移 · 零三方应用注入",
-            "✓ 系统层合成虚拟 GPS 与 10 颗工作卫星\n" +
-                "✓ 抹除 isMock 标记，隔离周边 Wi-Fi 与基站\n" +
-                "✓ 内核 iptables 拒止网络定位接口",
+            "✓ 系统层合成虚拟 GPS 与 12 颗工作卫星\n" +
+                "✓ 抹除模拟位置标记，隔离周边 Wi-Fi 与基站\n" +
+                "✓ 内核 iptables 阻断网络定位接口",
             "✗ 需已 Root 并在 LSPosed 启用模块后重启"
         )
         cardRefs.add(cRoot)
@@ -1291,11 +1304,11 @@ class MainActivity : Activity() {
         val cShizuku = buildModeCard(
             WorkMode.SHIZUKU,
             "2. 免 Root + Shizuku 增强模式",
-            "免 Root 推荐 · 自动授权 + 清理缓存 + 隔离扫描",
+            "免 Root 推荐 · 自动授权 + 扫描管理",
             "✓ 无需 Root，Shizuku 自动放行模拟位置\n" +
-                "✓ 自动限制微信等应用的 Wi-Fi/蓝牙扫描，清定位缓存并重载进程\n" +
-                "✓ 自动关闭后台扫描 + 局部 DNS 分流阻断网络定位",
-            "✗ 无法抹除系统底层 isMock 标记（强风控应用可能拒收）"
+                "✓ 漂移时自动关闭系统后台扫描，停止自动恢复\n" +
+                "✓ 支持指定应用扫描隔离与局部 DNS 分流阻断",
+            "✗ 受限于非 Root 权限，无法抹除底层模拟标记或隔离蜂窝基站"
         )
         cardRefs.add(cShizuku)
 
@@ -1304,16 +1317,16 @@ class MainActivity : Activity() {
             "3. 纯免 Root 基础模式",
             "零外部依赖 · 开箱即用",
             "✓ 无需 Root 与 Shizuku，系统模拟定位 + 局部 VPN\n" +
-                "✓ 仅拦截网络定位域名，正常聊天与上网畅通",
-            "✗ 需手动授权模拟位置、关闭后台扫描并重启目标应用"
+                "✓ 仅拦截网络定位域名，正常网络通信畅通",
+            "✗ 需手动在开发者选项授权并关闭后台扫描"
         )
         cardRefs.add(cBasic)
 
         val shizukuActionBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = createRoundedCard("#EFF6FF", "#BFDBFE", 10)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = createRoundedCard("#EFF6FF", "#BFDBFE", 12)
+            setPadding(dp(11), dp(8), dp(11), dp(8))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1332,10 +1345,10 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(8).toFloat()
+                cornerRadius = dp(9).toFloat()
                 setColor(Color.parseColor("#2563EB"))
             }
-            setPadding(dp(10), dp(4), dp(10), dp(4))
+            setPadding(dp(11), dp(4), dp(11), dp(4))
             minimumHeight = 0
             minHeight = dp(32)
             setOnClickListener {
@@ -1372,9 +1385,9 @@ class MainActivity : Activity() {
             for (item in cardRefs) {
                 val isSelected = item.mode == pendingMode
                 item.card.background = if (isSelected) {
-                    createRoundedCard("#EFF6FF", "#2563EB", 11)
+                    createRoundedCard("#EFF6FF", "#2563EB", 13)
                 } else {
-                    createRoundedCard("#F8FAFC", "#E2E8F0", 11)
+                    createRoundedCard("#F8FAFC", "#E2E8F0", 13)
                 }
                 item.radio.text = if (isSelected) "◉" else "○"
                 item.radio.setTextColor(
@@ -1487,8 +1500,8 @@ class MainActivity : Activity() {
 
         val noticeCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = createRoundedCard("#FFFBEB", "#FDE68A", 10)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = createRoundedCard("#FFFBEB", "#FDE68A", 12)
+            setPadding(dp(13), dp(11), dp(13), dp(11))
         }
         val tvTitle = TextView(this).apply {
             text = "LSPosed 模块已首次启用"
@@ -1554,7 +1567,7 @@ class MainActivity : Activity() {
     ) {
         suppressCheckboxCallback = true
         box.isEnabled = enabled
-        box.alpha = if (enabled) 1.0f else 0.52f
+        box.alpha = if (enabled) 1.0f else 0.55f
         if (checked != null) {
             box.isChecked = checked
         }
@@ -1570,7 +1583,7 @@ class MainActivity : Activity() {
         ).toInt()
     }
 
-    private fun createRoundedCard(bgColor: String, strokeColor: String, radiusDp: Int = 10): GradientDrawable {
+    private fun createRoundedCard(bgColor: String, strokeColor: String, radiusDp: Int = 12): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(radiusDp).toFloat()
@@ -1588,7 +1601,7 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(3), 0, dp(3))
+            setPadding(0, dp(3.5f.toInt()), 0, dp(3.5f.toInt()))
         }
         val tvLabel = TextView(this).apply {
             text = label
@@ -1617,11 +1630,11 @@ class MainActivity : Activity() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = if (highlight) {
-                createRoundedCard("#FFFBEB", "#FDE68A", 10)
+                createRoundedCard("#FFFBEB", "#FDE68A", 12)
             } else {
-                createRoundedCard("#F8FAFC", "#E2E8F0", 10)
+                createRoundedCard("#F8FAFC", "#E2E8F0", 12)
             }
-            setPadding(dp(10), dp(9), dp(10), dp(9))
+            setPadding(dp(11), dp(10), dp(11), dp(10))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1688,8 +1701,8 @@ class MainActivity : Activity() {
 
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = createRoundedCard("#EFF6FF", "#BFDBFE", 10)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = createRoundedCard("#EFF6FF", "#BFDBFE", 12)
+            setPadding(dp(13), dp(11), dp(13), dp(11))
         }
         val statusHeader = TextView(this).apply {
             text = "运行环境自检"
@@ -1741,12 +1754,12 @@ class MainActivity : Activity() {
                 )
                 addStatusCheckRow(
                     statusCard,
-                    "3. 目标应用硬件隔离",
+                    "3. 指定应用扫描隔离",
                     ShizukuHelper.getTargetAppsSummary(this),
                     "#059669"
                 )
-                addStatusCheckRow(statusCard, "4. 自动关扫描 & 清缓存", "支持 (停止自动恢复)", "#059669")
-                addStatusCheckRow(statusCard, "5. 抹除底层 isMock", "不支持 (需Root+LSPosed)", "#64748B")
+                addStatusCheckRow(statusCard, "4. 自动关后台扫描", "支持 (停止自动恢复)", "#059669")
+                addStatusCheckRow(statusCard, "5. 抹除底层模拟标记", "不支持 (需Root+LSPosed)", "#64748B")
             }
             WorkMode.ROOTLESS_BASIC -> {
                 addStatusCheckRow(statusCard, "当前模式", "纯免 Root 基础版", "#D97706")
@@ -1756,8 +1769,8 @@ class MainActivity : Activity() {
                     if (mockAllowed) "已授权 ✓" else "未设置 ✗",
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
-                addStatusCheckRow(statusCard, "2. 局部 DNS 阻断", "已就绪 (不拦截正常聊天)", "#059669")
-                addStatusCheckRow(statusCard, "3. 抹除isMock / 基站", "不支持 (需Root+LSPosed)", "#64748B")
+                addStatusCheckRow(statusCard, "2. 局部 DNS 阻断", "已就绪 (正常网络畅通)", "#059669")
+                addStatusCheckRow(statusCard, "3. 抹除模拟标记 / 基站", "不支持 (需Root+LSPosed)", "#64748B")
             }
         }
         root.addView(statusCard)
@@ -1774,14 +1787,14 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "目标应用扫描隔离 & 自动清缓存重载",
-                    "开启漂移时自动限制目标应用（默认微信）的 Wi-Fi/蓝牙扫描，清空腾讯定位缓存并重启目标应用以加载虚拟坐标，停止漂移自动恢复。"
+                    "自动后台扫描管理 & 可选应用隔离",
+                    "开启漂移时自动临时关闭系统后台 Wi-Fi/蓝牙扫描，并可按需配置指定应用包名的扫描权限隔离，停止漂移自动恢复。"
                 )
                 addStepCard(
                     root,
                     "!",
-                    "关于微信强风控校验说明",
-                    "免 Root 下系统仍会给模拟坐标打上 isMock 标记；若微信在当前系统版本严格拒收带 isMock 标记的 GPS，仅 Root + LSPosed 或虚拟沙盒容器可抹除该标记。"
+                    "免 Root 能力边界",
+                    "免 Root 模式下无法抹除系统底层模拟位置标记或隔离蜂窝基站，强环境校验场景需在 Root + LSPosed 完整模式下使用。"
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1795,14 +1808,14 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "开启前先关闭后台扫描并划掉目标应用",
-                    "在系统「设置 → 位置信息」关闭 Wi-Fi/蓝牙扫描，并彻底划掉微信等目标应用后再开启漂移。"
+                    "关闭系统 Wi-Fi / 蓝牙扫描减少回弹",
+                    "在系统「设置 → 位置信息」关闭 Wi-Fi 扫描与蓝牙扫描，并清理目标应用后台后再开启漂移。"
                 )
                 addStepCard(
                     root,
                     "!",
                     "免 Root 能力边界",
-                    "纯免 Root 无法隐藏 isMock 标记或基站信息，适用于高德/百度地图等普通应用；微信等强风控应用需在 Root + LSPosed 模式下使用。"
+                    "纯免 Root 模式适用于常规地图与位置测试；强环境校验场景需在 Root + LSPosed 完整模式下使用。"
                 )
             }
             WorkMode.ROOT_LSPOSED -> {
@@ -1945,7 +1958,7 @@ class MainActivity : Activity() {
                         ShizukuHelper.applyAntiDriftScanSuppression(this)
                     }
                     val isolatedCount = if (isolateApps) {
-                        ShizukuHelper.applyTargetAppLocationIsolation(this, forceRestartTarget = true)
+                        ShizukuHelper.applyTargetAppLocationIsolation(this)
                     } else {
                         0
                     }
@@ -1956,7 +1969,7 @@ class MainActivity : Activity() {
                         launchForegroundServices(cfg)
                         refreshRunStatusUI()
                         val msg = when {
-                            isolatedCount > 0 -> "已开启（已隔离并重置 $isolatedCount 个目标应用）"
+                            isolatedCount > 0 -> "已开启（已隔离 $isolatedCount 个指定应用）"
                             suppressScan -> "已开启（已自动关扫描）"
                             else -> "已开启定位漂移"
                         }
@@ -2222,15 +2235,25 @@ class MainActivity : Activity() {
                 WorkMode.SHIZUKU -> "● Shizuku运行"
                 WorkMode.ROOTLESS_BASIC -> "● 基础运行"
             }
-            tvRunStatus.setTextColor(Color.parseColor("#059669"))
+            applyPillStyle(tvRunStatus, "#059669", "#ECFDF5", "#A7F3D0")
             btnToggleDrift.text = "停止定位漂移"
-            btnToggleDrift.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#DC2626"))
+            btnToggleDrift.background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#EF4444"), Color.parseColor("#DC2626"))
+            ).apply {
+                cornerRadius = dp(14).toFloat()
+            }
             btnUpdatePoint.visibility = View.VISIBLE
         } else {
             tvRunStatus.text = "● 未开启"
-            tvRunStatus.setTextColor(Color.parseColor("#64748B"))
+            applyPillStyle(tvRunStatus, "#64748B", "#F8FAFC", "#E2E8F0")
             btnToggleDrift.text = "开启定位漂移"
-            btnToggleDrift.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#2563EB"))
+            btnToggleDrift.background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#3B82F6"), Color.parseColor("#1D4ED8"))
+            ).apply {
+                cornerRadius = dp(14).toFloat()
+            }
             btnUpdatePoint.visibility = View.GONE
         }
     }
@@ -2464,7 +2487,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun searchViaBaiduPoi(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
+    private fun searchViaDomesticPoi(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
         val url = "https://map.baidu.com/?newmap=1&reqflag=pcmap&biz=1&from=webmap" +
             "&da_par=direct&pcevaname=pc4.1&qt=s&da_src=searchBox.button" +
             "&wd=$encodedQuery&c=1&src=0&wd2=&pn=0&sug=0"
@@ -2515,7 +2538,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun searchViaBaiduSuggest(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
+    private fun searchViaDomesticSuggest(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
         val url = "https://map.baidu.com/su?wd=$encodedQuery&cid=1&type=0&newmap=1"
         val body = httpGetText(url, timeoutMs = 3000, referer = "https://map.baidu.com/") ?: return emptyList()
         return try {
@@ -2639,8 +2662,8 @@ class MainActivity : Activity() {
                 query
             }
 
-            val fBaiduPoi = searchPool.submit(Callable { searchViaBaiduPoi(encoded, query) })
-            val fBaiduSug = searchPool.submit(Callable { searchViaBaiduSuggest(encoded, query) })
+            val fPoi = searchPool.submit(Callable { searchViaDomesticPoi(encoded, query) })
+            val fSug = searchPool.submit(Callable { searchViaDomesticSuggest(encoded, query) })
             val fArcGis = searchPool.submit(Callable { searchViaArcGis(encoded, query) })
             val fPhoton = searchPool.submit(Callable { searchViaPhoton(encoded, query) })
 
@@ -2650,19 +2673,19 @@ class MainActivity : Activity() {
             while (System.currentTimeMillis() < deadline) {
                 if (searchGeneration.get() != gen) break
 
-                val poiRes = if (fBaiduPoi.isDone) runCatching { fBaiduPoi.get() }.getOrDefault(emptyList()) else emptyList()
+                val poiRes = if (fPoi.isDone) runCatching { fPoi.get() }.getOrDefault(emptyList()) else emptyList()
                 if (poiRes.isNotEmpty()) {
                     candidates = poiRes
                     break
                 }
 
-                val sugRes = if (fBaiduSug.isDone) runCatching { fBaiduSug.get() }.getOrDefault(emptyList()) else emptyList()
+                val sugRes = if (fSug.isDone) runCatching { fSug.get() }.getOrDefault(emptyList()) else emptyList()
                 if (sugRes.isNotEmpty()) {
                     candidates = sugRes
                     break
                 }
 
-                val bothDomesticDone = fBaiduPoi.isDone && fBaiduSug.isDone
+                val bothDomesticDone = fPoi.isDone && fSug.isDone
                 val arcRes = if (fArcGis.isDone) runCatching { fArcGis.get() }.getOrDefault(emptyList()) else emptyList()
                 val phoRes = if (fPhoton.isDone) runCatching { fPhoton.get() }.getOrDefault(emptyList()) else emptyList()
 
@@ -2682,8 +2705,8 @@ class MainActivity : Activity() {
             }
 
             if (candidates.isEmpty()) {
-                candidates = runCatching { fBaiduPoi.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList())
-                    .ifEmpty { runCatching { fBaiduSug.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
+                candidates = runCatching { fPoi.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList())
+                    .ifEmpty { runCatching { fSug.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
                     .ifEmpty { runCatching { fArcGis.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
                     .ifEmpty { runCatching { fPhoton.get(100, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList()) }
                     .ifEmpty { searchViaBuiltinCities(query) }
@@ -2693,8 +2716,8 @@ class MainActivity : Activity() {
                     }
             }
 
-            fBaiduPoi.cancel(true)
-            fBaiduSug.cancel(true)
+            fPoi.cancel(true)
+            fSug.cancel(true)
             fArcGis.cancel(true)
             fPhoton.cancel(true)
 

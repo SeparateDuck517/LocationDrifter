@@ -18,9 +18,9 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 免 Root / 免 CA 证书的局部 DNS 分流 + 主动 RST 拒止 VPN 通道：
  * 1) 仅路由本地虚拟 DNS (10.233.233.53 / fd00:233:233::53) 与黑洞地址 (10.233.233.254 / fd00:233:233::254)，
- *    绝不添加任何外部公网 IP 路由，避免误伤与定位接口共享腾讯云 BGP Anycast VIP 的微信 mmtls 聊天节点；
- * 2) 启用 allowBypass() 并支持 IPv4 + IPv6 双栈上游 DNS 透明转发，保证微信聊天、地图加载与正常上网 100% 畅通；
- * 3) 仅拦截纯网络定位接口域名 (lbs/loc/c/datalbs.map.qq.com 等)，返回黑洞地址并回发 TCP RST / ICMP 不可达。
+ *    绝不添加外部公网 IP 路由，避免误伤共享边缘节点；
+ * 2) 启用 allowBypass() 并支持 IPv4 + IPv6 双栈上游 DNS 透明转发，保证正常网络通信 100% 畅通；
+ * 3) 仅拦截纯网络定位接口域名，返回黑洞地址并回发 TCP RST / ICMP 不可达。
  */
 class DriftVpnService : VpnService() {
 
@@ -106,7 +106,6 @@ class DriftVpnService : VpnService() {
                     builder.setMetered(false)
                 }
 
-                // 仅放行定位漂移助手自身，确保内置地图搜索与逆地理编码正常
                 try {
                     builder.addDisallowedApplication(packageName)
                 } catch (_: Throwable) {
@@ -190,7 +189,7 @@ class DriftVpnService : VpnService() {
     private fun handleIpv4DnsPacket(packet: ByteArray, length: Int, output: FileOutputStream): Boolean {
         val ihl = (packet[0].toInt() and 0x0F) * 4
         if (ihl < 20 || length < ihl + 8) return false
-        if ((packet[9].toInt() and 0xFF) != 17) return false // UDP
+        if ((packet[9].toInt() and 0xFF) != 17) return false
 
         if ((packet[16].toInt() and 0xFF) != 10 ||
             (packet[17].toInt() and 0xFF) != 233 ||
@@ -239,7 +238,7 @@ class DriftVpnService : VpnService() {
 
     private fun handleIpv6DnsPacket(packet: ByteArray, length: Int, output: FileOutputStream): Boolean {
         if (length < 48) return false
-        if ((packet[6].toInt() and 0xFF) != 17) return false // UDP
+        if ((packet[6].toInt() and 0xFF) != 17) return false
 
         val expectedDst = byteArrayOf(
             0xFD.toByte(), 0x00, 0x02, 0x33, 0x02, 0x33, 0x00, 0x00,
@@ -330,8 +329,8 @@ class DriftVpnService : VpnService() {
     private fun buildSinkholeDnsResponse(query: ByteArray, questionEnd: Int, qtype: Int): ByteArray? {
         if (questionEnd > query.size) return null
         val answerLen = when (qtype) {
-            1 -> 16  // A -> 10.233.233.254
-            28 -> 28 // AAAA -> fd00:233:233::254
+            1 -> 16
+            28 -> 28
             else -> 0
         }
         val out = ByteArray(questionEnd + answerLen)

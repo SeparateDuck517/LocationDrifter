@@ -19,13 +19,11 @@ import java.util.concurrent.Executors
  * 免 Root Shizuku (UID 2000 ADB Shell) 特权通道辅助工具：
  * 1) 通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION，并辅以多格式 appops 命令兜底；
  * 2) 漂移期间自动临时关闭系统后台 Wi-Fi / 蓝牙扫描减少坐标回弹，停止漂移后自动还原；
- * 3) 动态隔离目标应用（默认微信 com.tencent.mm）的 Wi-Fi 扫描与蓝牙扫描 AppOps 感知权限（保留精细与粗略 GPS 定位权限），
- *    并自动清空目标应用腾讯定位 SDK 缓存及重载进程，迫使其立即采信系统模拟 GPS。
+ * 3) 支持按需临时隔离指定应用包名的 Wi-Fi 扫描与蓝牙扫描 AppOps 感知权限，停止漂移时自动恢复。
  */
 object ShizukuHelper {
 
     const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
-    const val DEFAULT_WECHAT_PACKAGE = "com.tencent.mm"
 
     private const val SCAN_BACKUP_PREFS = "shizuku_scan_backup"
     private const val KEY_HAS_BACKUP = "has_backup"
@@ -38,19 +36,6 @@ object ShizukuHelper {
 
     private const val OP_MOCK_LOCATION_CODE = 58
 
-    data class TargetAppPreset(
-        val packageName: String,
-        val displayName: String
-    )
-
-    val PRESET_TARGET_APPS = listOf(
-        TargetAppPreset("com.tencent.mm", "微信"),
-        TargetAppPreset("com.tencent.mobileqq", "QQ"),
-        TargetAppPreset("com.tencent.wework", "企业微信"),
-        TargetAppPreset("com.alibaba.android.rimet", "钉钉")
-    )
-
-    // 仅隔离 Wi-Fi 与蓝牙硬件扫描，保留 FINE/COARSE GPS 权限通道
     private val TARGET_ISOLATED_OPS = listOf(
         "android:wifi_scan",
         "android:bluetooth_scan"
@@ -247,7 +232,7 @@ object ShizukuHelper {
 
     fun getTargetApps(context: Context): List<String> {
         val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_TARGET_PACKAGES, null) ?: return listOf(DEFAULT_WECHAT_PACKAGE)
+        val raw = prefs.getString(KEY_TARGET_PACKAGES, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             val list = ArrayList<String>(arr.length())
@@ -259,7 +244,7 @@ object ShizukuHelper {
             }
             list
         } catch (_: Throwable) {
-            listOf(DEFAULT_WECHAT_PACKAGE)
+            emptyList()
         }
     }
 
@@ -276,15 +261,7 @@ object ShizukuHelper {
 
     fun getTargetAppsSummary(context: Context): String {
         val list = getTargetApps(context)
-        if (list.isEmpty()) return "未选择目标应用"
-        val names = list.map { pkg ->
-            PRESET_TARGET_APPS.firstOrNull { it.packageName == pkg }?.displayName ?: pkg
-        }
-        return if (names.size <= 2) {
-            names.joinToString("、")
-        } else {
-            "${names.take(2).joinToString("、")} 等 ${names.size} 个"
-        }
+        return if (list.isEmpty()) "未配置" else "已选 ${list.size} 项"
     }
 
     private fun queryCurrentAppOpMode(pkg: String, op: String): String {
@@ -301,14 +278,9 @@ object ShizukuHelper {
         }
     }
 
-    /**
-     * 通过 Shizuku 临时隔离目标应用（默认微信）的 Wi-Fi 与蓝牙扫描权限，
-     * 同时清理腾讯定位 SDK 缓存并强制重启目标应用进程（避免旧进程内存缓存旧真实坐标）。
-     */
     fun applyTargetAppLocationIsolation(
         context: Context,
-        packages: List<String> = getTargetApps(context),
-        forceRestartTarget: Boolean = true
+        packages: List<String> = getTargetApps(context)
     ): Int {
         if (!hasPermission() || packages.isEmpty()) return 0
         val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
@@ -340,12 +312,6 @@ object ShizukuHelper {
                     backupJson.put(key, origMode)
                 }
                 cmdBuilder.append("cmd appops set --user 0 $pkg $op ignore 2>/dev/null || appops set $pkg $op ignore 2>/dev/null || true\n")
-            }
-
-            // 清理外置存储中腾讯定位 SDK 缓存文件（tencentmapsdk / lbs），消除缓存坐标干扰
-            cmdBuilder.append("rm -rf /sdcard/Android/data/$pkg/files/tencentmapsdk /sdcard/Android/data/$pkg/cache/tencentmapsdk 2>/dev/null || true\n")
-            if (forceRestartTarget) {
-                cmdBuilder.append("am force-stop --user 0 $pkg 2>/dev/null || am force-stop $pkg 2>/dev/null || true\n")
             }
             isolatedCount++
         }
