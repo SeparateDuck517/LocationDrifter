@@ -139,8 +139,9 @@ class DriftVpnService : VpnService() {
                 drainThread = Thread {
                     val buf = ByteArray(32767)
                     try {
-                        FileInputStream(fd).use { input ->
-                            FileOutputStream(fd).use { output ->
+                        val rawFd = fd.fileDescriptor
+                        FileInputStream(rawFd).use { input ->
+                            FileOutputStream(rawFd).use { output ->
                                 while (isRunning && !Thread.currentThread().isInterrupted) {
                                     val read = input.read(buf)
                                     if (read < 0) break
