@@ -8,8 +8,6 @@ local.properties
 *.aab
 *.ap_
 *.dex
-*.jks
-*.keystore
 .DS_Store
 captures/
 .externalNativeBuild/
