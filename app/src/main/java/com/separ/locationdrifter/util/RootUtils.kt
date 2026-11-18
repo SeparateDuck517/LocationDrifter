@@ -127,13 +127,17 @@ object RootUtils {
         "rtt.map.qq.com",
         "ping.map.qq.com",
         "pr.map.qq.com",
+        "s.map.qq.com",
+        "confinfo.map.qq.com",
+        "overseactrl.map.qq.com",
+        "newsso.map.qq.com",
         "apilocate.amap.com",
         "cgicol.amap.com",
         "loc.map.baidu.com",
         "ofloc.map.baidu.com"
     )
 
-    // 微信核心长/短连接及基础业务域名：避免三层 IP 拦截与微信 mmtls 节点冲突导致微信离线
+    // 仅保护微信核心 mmtls IM 长短连接与 HTTPDNS 域名（不包含 mp/res/wx 等通用 CDN 域名，避免共享 EdgeOne IP 误放行定位接口）
     val PROTECTED_TENCENT_HOSTS = listOf(
         "szshort.weixin.qq.com",
         "szlong.weixin.qq.com",
@@ -141,10 +145,7 @@ object RootUtils {
         "szminorshort.weixin.qq.com",
         "short.weixin.qq.com",
         "long.weixin.qq.com",
-        "dns.weixin.qq.com",
-        "mp.weixin.qq.com",
-        "wx.qq.com",
-        "res.wx.qq.com"
+        "dns.weixin.qq.com"
     )
 
     fun enableIptablesBlock(): Boolean {

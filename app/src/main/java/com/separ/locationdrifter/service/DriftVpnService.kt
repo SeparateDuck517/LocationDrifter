@@ -12,22 +12,38 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 免 Root / 免 CA 证书的局部主动拒止 VPN 防漂移通道（IPv4 + IPv6 双栈）：
- * 1) 覆盖包括微信 (com.tencent.mm) 在内的三方应用定位 SDK 流量（仅放行定位漂移助手自身），
- *    同时剔除微信聊天长短连接域名 (PROTECTED_TENCENT_HOSTS) 的 IP 并配置 allowBypass() + 公共 DNS，
- *    确保微信正常消息收发不受任何影响；
- * 2) 仅对目标网络定位域名 IPv4 (/32) 与 IPv6 (/128) 地址添加精准主机路由，绝不劫持 0.0.0.0/0 或 ::/0；
- * 3) 收到发往定位服务器的 TCP/UDP 数据包时，在用户态直接回发 TCP RST(/ACK) 与 ICMP(v6) Port Unreachable，
- *    实现毫秒级拒止并迫使定位 SDK 立即采信系统模拟 GPS。
+ * 免 Root / 免 CA 证书的局部主动拒止 VPN 防漂移通道（DNS 精准分流 + IPv4/IPv6 双栈 RST 拒止）：
+ * 1) 内置本地 TUN DNS 拦截器 (10.233.233.53)：
+ *    - 针对微信内置腾讯定位 SDK (*.map.qq.com 定位接口) 与高德/百度网络定位域名，直接解析至黑洞地址
+ *      10.233.233.254，在用户态毫秒级回发 TCP RST / ICMP Port Unreachable，消除 GeoDNS/CDN 节点漂移漏网；
+ *    - 其余全部正常域名（含微信 mmtls 聊天、朋友圈、小程序等）通过 protect() 套接字透明转发至公共 DNS；
+ * 2) 同步预解析多组公共 DNS 的 IPv4 (/32) 与 IPv6 (/128) 主机路由，拦截微信启动前已缓存的定位服务器 IP；
+ * 3) 剔除微信核心 mmtls IM 长短连接节点 IP 并配置 allowBypass()，确保微信消息收发 100% 畅通。
  */
 class DriftVpnService : VpnService() {
 
     companion object {
         const val ACTION_START = "com.separ.locationdrifter.action.START_VPN"
         const val ACTION_STOP = "com.separ.locationdrifter.action.STOP_VPN"
+
+        private const val TUN_IPV4 = "10.233.233.1"
+        private const val TUN_DNS_IPV4 = "10.233.233.53"
+        private const val TUN_SINKHOLE_IPV4 = "10.233.233.254"
+        private const val TUN_IPV6 = "fd00:233:233::1"
+
+        private val UPSTREAM_DNS_SERVERS = listOf(
+            "223.5.5.5",
+            "119.29.29.29",
+            "180.76.76.76",
+            "114.114.114.114"
+        )
+
+        private val dnsExecutor = Executors.newCachedThreadPool()
 
         @Volatile
         var isRunning: Boolean = false
@@ -37,6 +53,7 @@ class DriftVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var drainThread: Thread? = null
     private val sessionGen = AtomicInteger(0)
+    private val writeLock = Any()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -56,6 +73,7 @@ class DriftVpnService : VpnService() {
 
         Thread {
             try {
+                // 仅排除微信核心 mmtls IM 节点 IP，避免共享 VIP 误伤微信聊天连接
                 val protectedIps = HashSet<String>()
                 for (host in RootUtils.PROTECTED_TENCENT_HOSTS) {
                     resolveHostIps(host).forEach { ip ->
@@ -81,38 +99,33 @@ class DriftVpnService : VpnService() {
                 val builder = Builder()
                     .setSession("LocationDrifter-RST-AntiDrift")
                     .setMtu(1500)
-                    .addAddress("10.233.233.1", 32)
-                    .addAddress("fd00:233:233::1", 128)
-                    .addDnsServer("223.5.5.5")
-                    .addDnsServer("119.29.29.29")
-                    .addDnsServer("2400:3200::1")
+                    .addAddress(TUN_IPV4, 32)
+                    .addAddress(TUN_IPV6, 128)
+                    .addDnsServer(TUN_DNS_IPV4)
+                    .addRoute(TUN_DNS_IPV4, 32)
+                    .addRoute(TUN_SINKHOLE_IPV4, 32)
                     .allowBypass()
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
                 }
 
-                // 仅放行定位漂移助手自身（保障内置地图选点与地理编码正常），对其余所有应用（含微信）生效
+                // 仅放行定位漂移助手自身，对其余全部应用（包括微信 com.tencent.mm）生效
                 try {
                     builder.addDisallowedApplication(packageName)
                 } catch (_: Throwable) {
                 }
 
-                if (ipv4s.isEmpty() && ipv6s.isEmpty()) {
-                    // 兜底占位路由，避免建立无路由 TUN
-                    builder.addRoute("10.233.233.2", 32)
-                } else {
-                    for (ip in ipv4s) {
-                        try {
-                            builder.addRoute(ip, 32)
-                        } catch (_: Throwable) {
-                        }
+                for (ip in ipv4s) {
+                    try {
+                        builder.addRoute(ip, 32)
+                    } catch (_: Throwable) {
                     }
-                    for (ip6 in ipv6s) {
-                        try {
-                            builder.addRoute(ip6, 128)
-                        } catch (_: Throwable) {
-                        }
+                }
+                for (ip6 in ipv6s) {
+                    try {
+                        builder.addRoute(ip6, 128)
+                    } catch (_: Throwable) {
                     }
                 }
 
@@ -140,12 +153,14 @@ class DriftVpnService : VpnService() {
                                     val read = input.read(buf)
                                     if (read < 0) break
                                     if (read == 0) continue
+
+                                    if (tryHandleTunDnsPacket(buf, read, output)) {
+                                        continue
+                                    }
+
                                     val reply = buildRejectReply(buf, read)
                                     if (reply != null) {
-                                        try {
-                                            output.write(reply)
-                                        } catch (_: Throwable) {
-                                        }
+                                        writePacketSafe(output, reply)
                                     }
                                 }
                             }
@@ -170,9 +185,231 @@ class DriftVpnService : VpnService() {
         }
     }
 
+    private fun writePacketSafe(output: FileOutputStream, packet: ByteArray) {
+        synchronized(writeLock) {
+            try {
+                output.write(packet)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     /**
-     * 结合系统解析器与直连公共 DNS (223.5.5.5 / 119.29.29.29) 同步提取域名的 IPv4 (A) 与 IPv6 (AAAA) 地址，
-     * 避免运营商 4G/5G 双栈环境下定位 SDK 走 IPv6 绕过纯 IPv4 路由。
+     * 拦截发往 10.233.233.53:53 的 UDP DNS 查询：
+     * - 匹配到网络定位域名时直接合成指向 10.233.233.254 的解析记录，后续 TCP/UDP 建连立即触发 RST 拒止；
+     * - 其余域名通过 protect() 套接字透明转发至上游公共 DNS。
+     */
+    private fun tryHandleTunDnsPacket(packet: ByteArray, length: Int, output: FileOutputStream): Boolean {
+        if (length < 28) return false
+        val version = (packet[0].toInt() ushr 4) and 0x0F
+        if (version != 4) return false
+
+        val ihl = (packet[0].toInt() and 0x0F) * 4
+        if (ihl < 20 || length < ihl + 8) return false
+        val proto = packet[9].toInt() and 0xFF
+        if (proto != 17) return false // UDP
+
+        // 检查目标 IP 是否为 10.233.233.53
+        if ((packet[16].toInt() and 0xFF) != 10 ||
+            (packet[17].toInt() and 0xFF) != 233 ||
+            (packet[18].toInt() and 0xFF) != 233 ||
+            (packet[19].toInt() and 0xFF) != 53
+        ) {
+            return false
+        }
+
+        val dstPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
+        if (dstPort != 53) return false
+
+        val totalLen = (((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF))
+            .coerceAtMost(length)
+        val udpLen = (((packet[ihl + 4].toInt() and 0xFF) shl 8) or (packet[ihl + 5].toInt() and 0xFF))
+            .coerceAtMost(totalLen - ihl)
+        if (udpLen <= 8) return true
+
+        val dnsOffset = ihl + 8
+        val dnsLen = udpLen - 8
+        val dnsQuery = ByteArray(dnsLen)
+        System.arraycopy(packet, dnsOffset, dnsQuery, 0, dnsLen)
+
+        val clientIp = ByteArray(4)
+        System.arraycopy(packet, 12, clientIp, 0, 4)
+        val serverIp = ByteArray(4)
+        System.arraycopy(packet, 16, serverIp, 0, 4)
+        val clientPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
+
+        val parsed = parseDnsQuestion(dnsQuery)
+        if (parsed != null && isBlockedLbsDomain(parsed.qname)) {
+            val dnsReply = buildSinkholeDnsResponse(dnsQuery, parsed.questionEndOffset, parsed.qtype)
+            if (dnsReply != null) {
+                val udpIpPacket = wrapIpv4UdpPacket(serverIp, 53, clientIp, clientPort, dnsReply)
+                writePacketSafe(output, udpIpPacket)
+            }
+            return true
+        }
+
+        dnsExecutor.execute {
+            val upstreamReply = forwardDnsQueryUpstream(dnsQuery)
+            if (upstreamReply != null && isRunning) {
+                val udpIpPacket = wrapIpv4UdpPacket(serverIp, 53, clientIp, clientPort, upstreamReply)
+                writePacketSafe(output, udpIpPacket)
+            }
+        }
+        return true
+    }
+
+    private data class DnsQuestion(
+        val qname: String,
+        val qtype: Int,
+        val questionEndOffset: Int
+    )
+
+    private fun parseDnsQuestion(query: ByteArray): DnsQuestion? {
+        if (query.size < 17) return null
+        val qdCount = ((query[4].toInt() and 0xFF) shl 8) or (query[5].toInt() and 0xFF)
+        if (qdCount < 1) return null
+
+        val sb = StringBuilder()
+        var idx = 12
+        var steps = 0
+        while (idx < query.size && steps < 64) {
+            val labelLen = query[idx].toInt() and 0xFF
+            if (labelLen == 0) {
+                idx++
+                break
+            }
+            if ((labelLen and 0xC0) != 0) return null
+            idx++
+            if (idx + labelLen > query.size) return null
+            if (sb.isNotEmpty()) sb.append('.')
+            sb.append(String(query, idx, labelLen, Charsets.US_ASCII))
+            idx += labelLen
+            steps++
+        }
+        if (idx + 4 > query.size) return null
+        val qtype = ((query[idx].toInt() and 0xFF) shl 8) or (query[idx + 1].toInt() and 0xFF)
+        return DnsQuestion(
+            qname = sb.toString().lowercase(Locale.US).trimEnd('.'),
+            qtype = qtype,
+            questionEndOffset = idx + 4
+        )
+    }
+
+    private fun isBlockedLbsDomain(qname: String): Boolean {
+        if (qname.isEmpty()) return false
+        if (qname in RootUtils.LBS_HOSTS) return true
+        // 拦截腾讯地图定位相关全部子域名，但放行 vectorsdk.map.qq.com（矢量底图样式）
+        if (qname.endsWith(".map.qq.com") && qname != "vectorsdk.map.qq.com") {
+            return true
+        }
+        return false
+    }
+
+    private fun buildSinkholeDnsResponse(query: ByteArray, questionEnd: Int, qtype: Int): ByteArray? {
+        if (questionEnd > query.size) return null
+        val includeARecord = (qtype == 1)
+        val answerLen = if (includeARecord) 16 else 0
+        val out = ByteArray(questionEnd + answerLen)
+
+        // Transaction ID
+        out[0] = query[0]
+        out[1] = query[1]
+        // Standard response, recursion available, NOERROR
+        out[2] = 0x81.toByte()
+        out[3] = 0x80.toByte()
+        // QDCOUNT = 1
+        out[4] = 0x00
+        out[5] = 0x01
+        // ANCOUNT = 1 (for A) or 0 (for AAAA/HTTPS so client immediately falls back to IPv4)
+        out[6] = 0x00
+        out[7] = if (includeARecord) 0x01 else 0x00
+        // NSCOUNT = 0, ARCOUNT = 0
+        out[8] = 0x00; out[9] = 0x00
+        out[10] = 0x00; out[11] = 0x00
+
+        System.arraycopy(query, 12, out, 12, questionEnd - 12)
+
+        if (includeARecord) {
+            var p = questionEnd
+            out[p++] = 0xC0.toByte()
+            out[p++] = 0x0C // Pointer to QNAME at offset 12
+            out[p++] = 0x00
+            out[p++] = 0x01 // TYPE A
+            out[p++] = 0x00
+            out[p++] = 0x01 // CLASS IN
+            out[p++] = 0x00
+            out[p++] = 0x00
+            out[p++] = 0x00
+            out[p++] = 0x01 // TTL = 1s
+            out[p++] = 0x00
+            out[p++] = 0x04 // RDLENGTH = 4
+            // 10.233.233.254
+            out[p++] = 10
+            out[p++] = 233.toByte()
+            out[p++] = 233.toByte()
+            out[p] = 254.toByte()
+        }
+        return out
+    }
+
+    private fun forwardDnsQueryUpstream(query: ByteArray): ByteArray? {
+        for (dnsIp in listOf("223.5.5.5", "119.29.29.29")) {
+            var socket: DatagramSocket? = null
+            try {
+                socket = DatagramSocket()
+                protect(socket)
+                socket.soTimeout = 1500
+                val addr = InetAddress.getByName(dnsIp)
+                socket.send(DatagramPacket(query, query.size, addr, 53))
+                val buf = ByteArray(2048)
+                val pkt = DatagramPacket(buf, buf.size)
+                socket.receive(pkt)
+                if (pkt.length >= 12) {
+                    val result = ByteArray(pkt.length)
+                    System.arraycopy(buf, 0, result, 0, pkt.length)
+                    return result
+                }
+            } catch (_: Throwable) {
+            } finally {
+                try {
+                    socket?.close()
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        return null
+    }
+
+    private fun wrapIpv4UdpPacket(
+        srcIp: ByteArray,
+        srcPort: Int,
+        dstIp: ByteArray,
+        dstPort: Int,
+        payload: ByteArray
+    ): ByteArray {
+        val udpLen = 8 + payload.size
+        val totalLen = 20 + udpLen
+        val out = ByteArray(totalLen)
+
+        out[0] = 0x45.toByte()
+        writeUInt16(out, 2, totalLen)
+        writeUInt16(out, 6, 0x4000)
+        out[8] = 64
+        out[9] = 17 // UDP
+        System.arraycopy(srcIp, 0, out, 12, 4)
+        System.arraycopy(dstIp, 0, out, 16, 4)
+        writeUInt16(out, 10, computeChecksum(out, 0, 20))
+
+        writeUInt16(out, 20, srcPort)
+        writeUInt16(out, 22, dstPort)
+        writeUInt16(out, 24, udpLen)
+        System.arraycopy(payload, 0, out, 28, payload.size)
+        writeUInt16(out, 26, computeIpv4TransportChecksum(out, 12, 16, 17, 20, udpLen))
+        return out
+    }
+
+    /**
+     * 结合系统解析器与多组直连公共 DNS 同步提取域名的 IPv4 (A) 与 IPv6 (AAAA) 地址
      */
     private fun resolveHostIps(host: String): Set<String> {
         val results = LinkedHashSet<String>()
@@ -190,8 +427,7 @@ class DriftVpnService : VpnService() {
             } catch (_: Throwable) {
             }
         }
-        // 补充直连 UDP DNS 查询，捕获更多 CDN/BGP 节点 IP
-        for (dnsIp in listOf("223.5.5.5", "119.29.29.29")) {
+        for (dnsIp in UPSTREAM_DNS_SERVERS) {
             results.addAll(queryDnsRecords(host, dnsIp, 1))  // A
             results.addAll(queryDnsRecords(host, dnsIp, 28)) // AAAA
         }
@@ -203,17 +439,16 @@ class DriftVpnService : VpnService() {
         return try {
             socket = DatagramSocket()
             protect(socket)
-            socket.soTimeout = 1200
+            socket.soTimeout = 1000
 
             val labels = host.trim('.').split('.')
             val query = ArrayList<Byte>(64)
-            // Transaction ID = 0x1337, Flags = 0x0100 (standard recursion)
             query.add(0x13); query.add(0x37)
             query.add(0x01); query.add(0x00)
-            query.add(0x00); query.add(0x01) // QDCOUNT = 1
-            query.add(0x00); query.add(0x00) // ANCOUNT = 0
-            query.add(0x00); query.add(0x00) // NSCOUNT = 0
-            query.add(0x00); query.add(0x00) // ARCOUNT = 0
+            query.add(0x00); query.add(0x01)
+            query.add(0x00); query.add(0x00)
+            query.add(0x00); query.add(0x00)
+            query.add(0x00); query.add(0x00)
             for (label in labels) {
                 val bytes = label.toByteArray(Charsets.US_ASCII)
                 if (bytes.isEmpty() || bytes.size > 63) return emptyList()
@@ -223,7 +458,7 @@ class DriftVpnService : VpnService() {
             query.add(0x00)
             query.add(((qtype ushr 8) and 0xFF).toByte())
             query.add((qtype and 0xFF).toByte())
-            query.add(0x00); query.add(0x01) // QCLASS = IN
+            query.add(0x00); query.add(0x01)
 
             val qBytes = query.toByteArray()
             val serverAddr = InetAddress.getByName(dnsServer)

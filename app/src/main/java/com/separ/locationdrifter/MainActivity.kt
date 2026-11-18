@@ -64,6 +64,7 @@ class MainActivity : Activity() {
         private const val KEY_SELECTED_WORK_MODE = "selected_work_mode"
         private const val KEY_SKIP_STARTUP_MODE_DIALOG = "skip_startup_mode_dialog"
         private const val KEY_SHIZUKU_AUTO_SUPPRESS_SCAN = "shizuku_auto_suppress_scan"
+        private const val KEY_VPN_DEFAULT_MIGRATED_V2 = "vpn_default_migrated_v2"
         private val searchExecutor = Executors.newSingleThreadExecutor()
 
         // 常见直辖市、省会及计划单列市 GCJ-02 离线兜底坐标（弱网或离线时搜索城市名依然秒级定位）
@@ -449,7 +450,15 @@ class MainActivity : Activity() {
         cbSystemMock.isChecked = cfg.enableSystemMock
         cbAntiDrift.isChecked = cfg.blockNetworkDrift
         cbIptables.isChecked = cfg.enableIptables
-        cbVpn.isChecked = cfg.enableVpn
+
+        // 升级迁移：若此前旧版本曾将免 Root / Shizuku 模式的默认 VPN 设为 false，自动恢复为推荐开启
+        val migratedV2 = uiPrefs.getBoolean(KEY_VPN_DEFAULT_MIGRATED_V2, false)
+        if (!migratedV2 && (selectedMode == WorkMode.SHIZUKU || selectedMode == WorkMode.ROOTLESS_BASIC)) {
+            cbVpn.isChecked = true
+            uiPrefs.edit().putBoolean(KEY_VPN_DEFAULT_MIGRATED_V2, true).apply()
+        } else {
+            cbVpn.isChecked = cfg.enableVpn
+        }
         suppressCheckboxCallback = false
 
         updateCoordTexts()
@@ -488,7 +497,6 @@ class MainActivity : Activity() {
                     checked = shizukuAutoSuppressScan,
                     label = "自动关扫描(Shizuku)"
                 )
-                // 免 Root 下默认开启局部 RST-VPN 阻断腾讯/高德/百度网络定位接口，使微信等应用快速回落虚拟 GPS
                 setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -676,7 +684,7 @@ class MainActivity : Activity() {
                             tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                             tvDegradedTitle.text = "Shizuku 免 Root 增强模式已就绪"
                             tvDegradedDesc.text =
-                                "已自动放行模拟位置；漂移时自动临时关闭 Wi-Fi/蓝牙扫描，配合局部 RST-VPN 阻断腾讯/高德等网络定位接口（微信/高德均生效）。"
+                                "已自动放行模拟位置；漂移时自动关闭 Wi-Fi/蓝牙扫描，配合内置 DNS 分流与双栈 RST-VPN 阻断微信/高德网络定位（建议勾选 VPN阻断）。"
                             btnDegradedAction.text = "模式对比 ›"
                         }
                         !shizukuAutoGrantTried -> {
@@ -744,7 +752,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                     tvDegradedTitle.text = "纯免 Root 基础模式已就绪"
                     tvDegradedDesc.text =
-                        "已启用系统GPS + 局部RST-VPN（主动回发 TCP RST 阻断网络定位接口，支持微信与高德地图）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描。"
+                        "已启用系统GPS + DNS分流双栈RST-VPN（主动回发 TCP RST 阻断网络定位接口，支持微信与高德地图）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描。"
                     btnDegradedAction.text = "防漂移指南 ›"
                 } else {
                     tvXposedStatus.text = "模拟定位: 未设置 ›"
@@ -1367,7 +1375,7 @@ class MainActivity : Activity() {
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
                 addStatusCheckRow(statusCard, "3. 自动关Wi-Fi/蓝牙扫描", "支持 (停止漂移自动恢复)", "#059669")
-                addStatusCheckRow(statusCard, "4. 局部 RST-VPN 阻断", "已适配微信/高德双栈定位接口", "#059669")
+                addStatusCheckRow(statusCard, "4. DNS分流 + 双栈RST-VPN", "已适配微信/高德网络定位阻断", "#059669")
                 addStatusCheckRow(statusCard, "5. 抹除isMock / 基站隔离", "不支持 (受SELinux隔离限制)", "#64748B")
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1378,7 +1386,7 @@ class MainActivity : Activity() {
                     if (mockAllowed) "已授权 ✓" else "未设置 (必须配置) ✗",
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
-                addStatusCheckRow(statusCard, "2. 局部 RST-VPN 通道", "已适配微信/高德双栈定位接口", "#059669")
+                addStatusCheckRow(statusCard, "2. DNS分流 + 双栈RST-VPN", "已适配微信/高德网络定位阻断", "#059669")
                 addStatusCheckRow(statusCard, "3. 抹除isMock / 基站隔离", "不支持 (需Root+LSPosed)", "#64748B")
             }
         }
@@ -1408,7 +1416,7 @@ class MainActivity : Activity() {
                     root,
                     "3",
                     "保持开启「VPN阻断(推荐)」以支持微信定位",
-                    "局部 RST-VPN 仅对腾讯/高德/百度网络定位域名建立双栈主机路由并立即回发 TCP RST，同时放行微信消息通道，迫使微信内置定位 SDK 回落至虚拟 GPS。"
+                    "局部 RST-VPN 内置本地 DNS 拦截与双栈主机路由，直接阻断腾讯/高德/百度网络定位接口并放行微信聊天通道，迫使微信内置定位 SDK 回落至虚拟 GPS。"
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1423,7 +1431,7 @@ class MainActivity : Activity() {
                     root,
                     "2",
                     "保持开启「系统GPS注入 + VPN阻断(推荐)」",
-                    "局部 VPN 仅对腾讯/高德/百度网络定位域名建立精准双栈路由并主动回发 TCP RST，不会阻断微信聊天与正常上网，可迫使微信等应用快速回落至虚拟 GPS。"
+                    "局部 VPN 内置 DNS 分流与双栈 RST 拒止，阻断腾讯/高德/百度网络定位接口并放行微信聊天通道，可迫使微信等应用快速回落至虚拟 GPS。"
                 )
                 addStepCard(
                     root,

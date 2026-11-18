@@ -39,7 +39,7 @@ class MockLocationService : Service() {
 
         private const val CHANNEL_ID = "location_drifter_channel"
         private const val NOTIFICATION_ID = 10086
-        private const val UPDATE_INTERVAL_MS = 500L
+        private const val UPDATE_INTERVAL_MS = 300L
 
         @Volatile
         var isRunning: Boolean = false
@@ -193,6 +193,8 @@ class MockLocationService : Service() {
         val jitterLng = if (cfg.enableJitter) Random.nextDouble(-0.000003, 0.000003) else 0.0
         val lat = cfg.wgsLat + jitterLat
         val lng = cfg.wgsLng + jitterLng
+        val jitterSpeed = if (cfg.enableJitter) Random.nextDouble(0.03, 0.16).toFloat() else 0.0f
+        val jitterBearing = if (cfg.enableJitter) Random.nextDouble(0.0, 359.9).toFloat() else 0.0f
 
         for (provider in activeProviders) {
             try {
@@ -200,18 +202,20 @@ class MockLocationService : Service() {
                     latitude = lat
                     longitude = lng
                     altitude = 36.0
-                    accuracy = 3.5f
-                    speed = 0.0f
-                    bearing = 0.0f
+                    accuracy = if (provider == LocationManager.GPS_PROVIDER) 3.2f else 5.0f
+                    speed = jitterSpeed
+                    bearing = jitterBearing
                     time = System.currentTimeMillis()
                     elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        bearingAccuracyDegrees = 0.5f
+                        bearingAccuracyDegrees = 1.5f
                         speedAccuracyMetersPerSecond = 0.2f
                         verticalAccuracyMeters = 2.0f
                     }
                     extras = Bundle().apply {
                         putInt("satellites", 12)
+                        putInt("maxCn0", 42)
+                        putInt("meanCn0", 35)
                     }
                 }
                 locationManager.setTestProviderLocation(provider, loc)
