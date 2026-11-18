@@ -56,6 +56,8 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_PERMISSIONS = 101
         private const val REQ_VPN = 102
+        private const val UI_PREFS_NAME = "ui_state_prefs"
+        private const val KEY_XPOSED_REBOOT_PROMPTED = "xposed_reboot_prompted"
         private val searchExecutor = Executors.newSingleThreadExecutor()
 
         // 常见直辖市、省会及计划单列市 GCJ-02 离线兜底坐标（弱网或离线时搜索城市名依然秒级定位）
@@ -140,6 +142,7 @@ class MainActivity : Activity() {
 
     private var hasRoot = false
     private var hasXposed = false
+    private var hasSystemHookActive = false
     private var rootCheckCompleted = false
     private var rootlessDefaultsApplied = false
     private var isEnabled = false
@@ -205,14 +208,21 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnAddFavorite).setOnClickListener { showAddFavoriteDialog() }
         btnFavorites.setOnClickListener { showFavoritesDialog() }
 
+        val bannerOrActionClick = View.OnClickListener {
+            if (hasXposed && !hasSystemHookActive) {
+                showFirstActivationRebootDialog()
+            } else {
+                showEnvironmentGuideDialog()
+            }
+        }
         val openGuideClick = View.OnClickListener {
             showEnvironmentGuideDialog()
         }
         btnHelpGuide.setOnClickListener(openGuideClick)
-        cardDegradedBanner.setOnClickListener(openGuideClick)
-        btnDegradedAction.setOnClickListener(openGuideClick)
+        cardDegradedBanner.setOnClickListener(bannerOrActionClick)
+        btnDegradedAction.setOnClickListener(bannerOrActionClick)
         tvRootStatus.setOnClickListener(openGuideClick)
-        tvXposedStatus.setOnClickListener(openGuideClick)
+        tvXposedStatus.setOnClickListener(bannerOrActionClick)
 
         btnToggleDrift.setOnClickListener {
             if (isEnabled) {
@@ -241,13 +251,20 @@ class MainActivity : Activity() {
         }
         val lockedTouchExplain = View.OnTouchListener { v, event ->
             if (!v.isEnabled && event.action == MotionEvent.ACTION_UP) {
-                val reason = if (v.id == R.id.cbIptables) {
-                    "「内核阻断」依赖 Root 权限，免 Root 模式下请使用「VPN阻断(推荐)」替代"
-                } else {
-                    "「防基站/WiFi漂移」依赖 Root + LSPosed 系统框架注入，免 Root 模式下不可用"
+                val reason = when {
+                    v.id == R.id.cbIptables ->
+                        "「内核阻断」依赖 Root 权限，免 Root 模式下请使用「VPN阻断(推荐)」替代"
+                    hasXposed && !hasSystemHookActive ->
+                        "LSPosed 模块已激活，需先重启手机加载系统 Hook 后才可开启「防基站/WiFi漂移」"
+                    else ->
+                        "「防基站/WiFi漂移」依赖 Root + LSPosed 系统框架注入，需先激活模块并重启"
                 }
                 toast(reason)
-                showEnvironmentGuideDialog()
+                if (hasXposed && !hasSystemHookActive) {
+                    showFirstActivationRebootDialog()
+                } else {
+                    showEnvironmentGuideDialog()
+                }
                 true
             } else {
                 false
@@ -311,22 +328,59 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun isSystemHookReadyThisBoot(): Boolean {
+        if (!ModuleStatus.isModuleActive()) return false
+        return try {
+            val currentBoot = Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, -1)
+            val hookedBoot = Settings.Global.getInt(
+                contentResolver,
+                ConfigManager.SETTINGS_GLOBAL_HOOKED_BOOT_KEY,
+                -2
+            )
+            currentBoot > 0 && hookedBoot == currentBoot
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
     private fun updateEnvironmentUI() {
-        // 严格依赖模块自 Hook 状态（New XSharedPreferences 在模块开关关闭时仍可能返回 true，不可作为激活依据）
         hasXposed = ModuleStatus.isModuleActive()
+        hasSystemHookActive = isSystemHookReadyThisBoot()
+
+        val uiPrefs = getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+        if (!hasXposed) {
+            // 模块关闭后重置首次激活标记，确保下次重新打开模块开关时仍会提示重启
+            if (uiPrefs.getBoolean(KEY_XPOSED_REBOOT_PROMPTED, false)) {
+                uiPrefs.edit().putBoolean(KEY_XPOSED_REBOOT_PROMPTED, false).apply()
+            }
+        }
 
         if (!rootCheckCompleted) {
             tvRootStatus.text = "Root: 检测中..."
             tvRootStatus.setTextColor(Color.parseColor("#475569"))
-            tvXposedStatus.text = if (hasXposed) "LSPosed: 已激活 ✓" else "LSPosed: 检测中..."
+            tvXposedStatus.text = when {
+                hasSystemHookActive -> "LSPosed: 已激活 ✓"
+                hasXposed -> "LSPosed: 待重启 ›"
+                else -> "LSPosed: 检测中..."
+            }
             tvXposedStatus.setTextColor(
-                if (hasXposed) Color.parseColor("#059669") else Color.parseColor("#475569")
+                when {
+                    hasSystemHookActive -> Color.parseColor("#059669")
+                    hasXposed -> Color.parseColor("#D97706")
+                    else -> Color.parseColor("#475569")
+                }
             )
             return
         }
 
-        if (hasRoot && hasXposed) {
-            // 完整模式：Root + LSPosed
+        // 首次检测到 LSPosed 模块开关被激活，但当前启动周期 system_server 尚未加载 Hook -> 自动弹出重启提示
+        if (hasXposed && !hasSystemHookActive && !uiPrefs.getBoolean(KEY_XPOSED_REBOOT_PROMPTED, false)) {
+            uiPrefs.edit().putBoolean(KEY_XPOSED_REBOOT_PROMPTED, true).apply()
+            showFirstActivationRebootDialog()
+        }
+
+        if (hasRoot && hasSystemHookActive) {
+            // 完整模式：Root + LSPosed（且已重启加载系统框架 Hook）
             tvSubtitleMode.text = "零三方应用注入架构 · 系统级防漂移"
             tvRootStatus.text = "Root: 已授权 ✓"
             tvRootStatus.setTextColor(Color.parseColor("#059669"))
@@ -336,6 +390,24 @@ class MainActivity : Activity() {
 
             setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
             setCheckboxState(cbAntiDrift, enabled = true, label = "防基站/WiFi漂移")
+            setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
+            setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
+        } else if (hasRoot && hasXposed && !hasSystemHookActive) {
+            // 已激活 LSPosed 模块开关，但尚未重启设备（system_server 未加载 Hook）
+            tvSubtitleMode.text = "LSPosed 已激活 · 需重启手机加载系统 Hook"
+            tvRootStatus.text = "Root: 已授权 ✓"
+            tvRootStatus.setTextColor(Color.parseColor("#059669"))
+            tvXposedStatus.text = "LSPosed: 待重启 ›"
+            tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+
+            cardDegradedBanner.visibility = View.VISIBLE
+            tvDegradedTitle.text = "⚠️ LSPosed 模块已激活，重启手机后正式生效"
+            tvDegradedDesc.text =
+                "模块开关已打开，但系统框架 (android) 尚未加载 Hook。请重启一次手机，否则底层基站/Wi-Fi隔离与 Mock 标记抹除不会生效。"
+            btnDegradedAction.text = "立即重启 ›"
+
+            setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
+            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(待重启)")
             setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
             setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
         } else if (hasRoot && !hasXposed) {
@@ -391,6 +463,75 @@ class MainActivity : Activity() {
             }
             setCheckboxState(cbVpn, enabled = true, checked = autoEnableVpn, label = "VPN阻断(推荐)")
         }
+    }
+
+    private fun showFirstActivationRebootDialog() {
+        val scroll = ScrollView(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(6))
+        }
+        scroll.addView(root)
+
+        val noticeCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = createRoundedCard("#FFFBEB", "#FDE68A", 10)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val tvTitle = TextView(this).apply {
+            text = "检测到 LSPosed 模块已首次启用"
+            setTextColor(Color.parseColor("#92400E"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val tvBody = TextView(this).apply {
+            text = "由于本工具采用「零三方应用注入」架构，仅挂载在系统框架 (android) 与电话服务 (com.android.phone) 进程中，系统进程仅在开机启动时加载模块。\n\n请重启一次手机，重启后顶部状态将自动变为「LSPosed: 已激活 ✓」，底层防漂移与 Mock 标记抹除即可生效。"
+            setTextColor(Color.parseColor("#78350F"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setLineSpacing(dp(2).toFloat(), 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(6)
+            }
+        }
+        noticeCard.addView(tvTitle)
+        noticeCard.addView(tvBody)
+        root.addView(noticeCard)
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("需要重启手机以生效")
+            .setView(scroll)
+
+        if (hasRoot) {
+            builder.setPositiveButton("立即重启手机") { _, _ ->
+                confirmAndRebootDevice()
+            }
+            builder.setNegativeButton("稍后手动重启", null)
+        } else {
+            builder.setPositiveButton("知道了，稍后重启", null)
+        }
+        builder.show()
+    }
+
+    private fun confirmAndRebootDevice() {
+        AlertDialog.Builder(this)
+            .setTitle("确认立即重启？")
+            .setMessage("手机将立即重启，重启完成后打开「定位漂移助手」即可使用完整模式。")
+            .setPositiveButton("确认重启") { _, _ ->
+                toast("正在重启设备...")
+                RootUtils.runRootTask {
+                    val ok = RootUtils.rebootDevice()
+                    if (!ok) {
+                        runOnUiThread {
+                            toast("自动重启失败，请长按电源键手动重启手机")
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun setCheckboxState(
@@ -524,7 +665,7 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 统一结构化环境自检与使用指引弹窗（自动适配完整模式、仅Root模式、免Root降级模式）
+     * 统一结构化环境自检与使用指引弹窗（自动适配完整模式、待重启模式、仅Root模式、免Root降级模式）
      */
     private fun showEnvironmentGuideDialog() {
         val mockAllowed = RootUtils.isMockLocationAllowed(this)
@@ -550,11 +691,15 @@ class MainActivity : Activity() {
         }
         statusCard.addView(statusHeader)
 
-        if (hasRoot && hasXposed) {
+        if (hasRoot && hasSystemHookActive) {
             addStatusCheckRow(statusCard, "运行架构", "Root + LSPosed 完整模式", "#059669")
             addStatusCheckRow(statusCard, "系统GPS & 模拟标记抹除", "已就绪 (零三方应用注入)", "#059669")
             addStatusCheckRow(statusCard, "底层基站/Wi-Fi源头隔离", "已就绪 (Binder IPC 拦截)", "#059669")
             addStatusCheckRow(statusCard, "内核 iptables 阻断", "已就绪", "#059669")
+        } else if (hasRoot && hasXposed && !hasSystemHookActive) {
+            addStatusCheckRow(statusCard, "Root 权限", "已授权 ✓", "#059669")
+            addStatusCheckRow(statusCard, "LSPosed 模块开关", "已开启，等待重启生效", "#D97706")
+            addStatusCheckRow(statusCard, "系统框架 (android) Hook", "尚未加载 (需重启设备)", "#DC2626")
         } else if (hasRoot && !hasXposed) {
             addStatusCheckRow(statusCard, "Root 权限", "已授权", "#059669")
             addStatusCheckRow(statusCard, "LSPosed 模块状态", "未激活 (需勾选作用域并重启)", "#D97706")
@@ -600,6 +745,20 @@ class MainActivity : Activity() {
                 "免 Root 模式能力边界说明",
                 "适用于普通地图、打卡及不强校验系统底层模拟标记的应用；若目标 App 强检测 Location.isMock() 或读取基站指纹，需在 Root + LSPosed 完整模式下使用。"
             )
+        } else if (hasXposed && !hasSystemHookActive) {
+            addStepCard(
+                root,
+                "1",
+                "重启一次手机以加载系统级 Hook（必做）",
+                "LSPosed 模块开关已打开，但 system_server 与电话服务进程仅在开机时注入模块。点击下方「立即重启手机」或手动重启后，完整功能即刻解锁。",
+                highlight = true
+            )
+            addStepCard(
+                root,
+                "2",
+                "确认作用域配置",
+                "重启前可确认 LSPosed 中本模块的作用域已勾选「系统框架 (android)」与「电话服务 (com.android.phone)」，无需勾选任何第三方业务 App。"
+            )
         } else if (!hasXposed) {
             addStepCard(
                 root,
@@ -617,8 +776,8 @@ class MainActivity : Activity() {
             addStepCard(
                 root,
                 "3",
-                "重启手机或执行软重启生效",
-                "修改系统框架作用域后，重启一次设备即可解锁「防基站/WiFi漂移」与底层 Mock 标记抹除。"
+                "重启手机生效",
+                "打开开关并确认作用域后，重启一次设备即可解锁「防基站/WiFi漂移」与底层 Mock 标记抹除。"
             )
         } else {
             addStepCard(
@@ -636,7 +795,7 @@ class MainActivity : Activity() {
         }
 
         val builder = AlertDialog.Builder(this)
-            .setTitle(if (hasRoot && hasXposed) "完整模式使用说明" else "环境自检与配置向导")
+            .setTitle(if (hasRoot && hasSystemHookActive) "完整模式使用说明" else "环境自检与配置向导")
             .setView(scroll)
             .setNegativeButton("知道了", null)
 
@@ -646,6 +805,10 @@ class MainActivity : Activity() {
             }
             builder.setNeutralButton("系统位置设置") { _, _ ->
                 openLocationSourceSettings()
+            }
+        } else if (hasXposed && !hasSystemHookActive) {
+            builder.setPositiveButton("立即重启手机") { _, _ ->
+                confirmAndRebootDevice()
             }
         }
         builder.show()
@@ -879,7 +1042,7 @@ class MainActivity : Activity() {
             gcjLng = currentGcjLng,
             address = currentAddress,
             enableSystemMock = cbSystemMock.isChecked,
-            blockNetworkDrift = cbAntiDrift.isChecked && hasXposed,
+            blockNetworkDrift = cbAntiDrift.isChecked && hasSystemHookActive,
             enableIptables = cbIptables.isChecked && hasRoot,
             enableVpn = cbVpn.isChecked,
             enableJitter = true,

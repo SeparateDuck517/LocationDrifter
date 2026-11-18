@@ -33,6 +33,10 @@ object RootUtils {
         return execSu("id").let { it.success && it.stdout.contains("uid=0") }
     }
 
+    fun rebootDevice(): Boolean {
+        return execSu("svc power reboot || reboot").success
+    }
+
     /**
      * 免 Root 环境下检测当前应用是否已在「开发者选项 -> 选择模拟位置信息应用」中被授权
      */
