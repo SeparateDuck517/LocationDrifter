@@ -127,7 +127,7 @@ class MockLocationService : Service() {
                 if (RootUtils.isRootAvailable()) {
                     RootUtils.grantMockAndLocationPermissions(packageName)
                 } else if (ShizukuHelper.hasPermission()) {
-                    ShizukuHelper.grantMockAndLocationPermissions(packageName)
+                    ShizukuHelper.grantMockAndLocationPermissions(this)
                 }
             }
             setupTestProviders()
@@ -257,7 +257,6 @@ class MockLocationService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (_: SecurityException) {
-            // 若用户未授予任何定位权限，避免服务崩溃
         }
     }
 

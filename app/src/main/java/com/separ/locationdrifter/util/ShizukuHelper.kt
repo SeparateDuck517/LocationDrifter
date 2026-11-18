@@ -1,18 +1,22 @@
 package com.separ.locationdrifter.util
 
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.IBinder
 import android.provider.Settings
 import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuBinderWrapper
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.Executors
 
 /**
  * 免 Root Shizuku (UID 2000 ADB Shell) 特权通道辅助工具：
- * 1) 自动授予 android:mock_location 与定位/通知权限，免去手动配置开发者选项；
+ * 1) 优先通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION，并辅以多格式 appops 命令兜底，
+ *    自动放行模拟位置与定位/通知权限，免去手动配置开发者选项；
  * 2) 在开启定位漂移期间自动临时关闭系统后台 Wi-Fi / 蓝牙扫描减少坐标回弹，停止漂移后自动还原。
  */
 object ShizukuHelper {
@@ -22,6 +26,7 @@ object ShizukuHelper {
     private const val KEY_HAS_BACKUP = "has_backup"
     private const val KEY_ORIG_WIFI_SCAN = "orig_wifi_scan"
     private const val KEY_ORIG_BLE_SCAN = "orig_ble_scan"
+    private const val OP_MOCK_LOCATION_CODE = 58
 
     private val shizukuExecutor = Executors.newSingleThreadExecutor()
 
@@ -133,16 +138,94 @@ object ShizukuHelper {
     }
 
     /**
-     * 免 Root 自动授权模拟位置与定位/通知权限
+     * 通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION（与系统开发者选项同源）
      */
-    fun grantMockAndLocationPermissions(packageName: String): Boolean {
+    private fun grantMockLocationViaBinder(context: Context): Boolean {
+        if (!hasPermission()) return false
+        return try {
+            val rawBinder: IBinder = try {
+                val sshCls = Class.forName("rikka.shizuku.SystemServiceHelper")
+                val getSvc = sshCls.getMethod("getSystemService", String::class.java)
+                getSvc.invoke(null, Context.APP_OPS_SERVICE) as? IBinder
+            } catch (_: Throwable) {
+                null
+            } ?: run {
+                val smCls = Class.forName("android.os.ServiceManager")
+                val getSvc = smCls.getMethod("getService", String::class.java)
+                getSvc.invoke(null, Context.APP_OPS_SERVICE) as? IBinder
+            } ?: return false
+
+            val wrappedBinder = ShizukuBinderWrapper(rawBinder)
+            val stubCls = Class.forName("com.android.internal.app.IAppOpsService\$Stub")
+            val asInterface = stubCls.getMethod("asInterface", IBinder::class.java)
+            val appOpsService = asInterface.invoke(null, wrappedBinder) ?: return false
+
+            val uid = android.os.Process.myUid()
+            val pkg = context.packageName
+            val opCode = try {
+                val field = AppOpsManager::class.java.getDeclaredField("OP_MOCK_LOCATION")
+                field.isAccessible = true
+                field.getInt(null)
+            } catch (_: Throwable) {
+                OP_MOCK_LOCATION_CODE
+            }
+
+            try {
+                val setMode = appOpsService.javaClass.getMethod(
+                    "setMode",
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    String::class.java,
+                    Int::class.javaPrimitiveType
+                )
+                setMode.invoke(appOpsService, opCode, uid, pkg, AppOpsManager.MODE_ALLOWED)
+            } catch (_: Throwable) {
+            }
+
+            try {
+                val setUidMode = appOpsService.javaClass.getMethod(
+                    "setUidMode",
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType
+                )
+                setUidMode.invoke(appOpsService, opCode, uid, AppOpsManager.MODE_ALLOWED)
+            } catch (_: Throwable) {
+            }
+
+            RootUtils.isMockLocationAllowed(context)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * 免 Root 自动授权模拟位置与定位/通知权限，并以实际 AppOpsManager 检测结果作为最终返回值
+     */
+    fun grantMockAndLocationPermissions(context: Context): Boolean {
+        if (!hasPermission()) return RootUtils.isMockLocationAllowed(context)
+        val packageName = context.packageName
+        val uid = android.os.Process.myUid()
+
+        // 1. 优先尝试 Binder 直连 IAppOpsService 授予模拟位置权限
+        if (!RootUtils.isMockLocationAllowed(context)) {
+            grantMockLocationViaBinder(context)
+        }
+
+        // 2. 补充多格式 shell appops 与运行时定位/通知权限授权
         val cmd = """
-            appops set $packageName android:mock_location allow
-            pm grant $packageName android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
-            pm grant $packageName android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true
-            pm grant $packageName android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+            cmd appops set --user 0 $packageName android:mock_location allow 2>/dev/null || true
+            appops set --user 0 $packageName android:mock_location allow 2>/dev/null || true
+            cmd appops set --uid $uid android:mock_location allow 2>/dev/null || true
+            appops set $packageName android:mock_location allow 2>/dev/null || true
+            appops set $packageName $OP_MOCK_LOCATION_CODE allow 2>/dev/null || true
+            pm grant --user 0 $packageName android.permission.ACCESS_FINE_LOCATION 2>/dev/null || pm grant $packageName android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
+            pm grant --user 0 $packageName android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || pm grant $packageName android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true
+            pm grant --user 0 $packageName android.permission.POST_NOTIFICATIONS 2>/dev/null || pm grant $packageName android.permission.POST_NOTIFICATIONS 2>/dev/null || true
         """.trimIndent()
-        return execShizuku(cmd).success
+        execShizuku(cmd)
+
+        return RootUtils.isMockLocationAllowed(context)
     }
 
     /**
@@ -169,8 +252,8 @@ object ShizukuHelper {
                 .apply()
         }
         val cmd = """
-            settings put global wifi_scan_always_enabled 0 2>/dev/null || true
-            settings put global ble_scan_always_enabled 0 2>/dev/null || true
+            settings put global wifi_scan_always_enabled 0 2>/dev/null || cmd settings put global wifi_scan_always_enabled 0 2>/dev/null || true
+            settings put global ble_scan_always_enabled 0 2>/dev/null || cmd settings put global ble_scan_always_enabled 0 2>/dev/null || true
         """.trimIndent()
         return execShizuku(cmd).success
     }
@@ -187,8 +270,8 @@ object ShizukuHelper {
 
         if (!hasPermission()) return false
         val cmd = """
-            settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || true
-            settings put global ble_scan_always_enabled $origBle 2>/dev/null || true
+            settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || cmd settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || true
+            settings put global ble_scan_always_enabled $origBle 2>/dev/null || cmd settings put global ble_scan_always_enabled $origBle 2>/dev/null || true
         """.trimIndent()
         return execShizuku(cmd).success
     }

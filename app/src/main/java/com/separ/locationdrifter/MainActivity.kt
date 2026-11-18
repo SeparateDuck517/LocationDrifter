@@ -164,6 +164,7 @@ class MainActivity : Activity() {
     private var hasSystemHookActive = false
     private var hasShizukuBinder = false
     private var hasShizukuPermission = false
+    private var shizukuAutoGrantTried = false
     private var rootCheckCompleted = false
     private var startupDialogShown = false
     private var selectedMode: WorkMode = WorkMode.ROOTLESS_BASIC
@@ -177,7 +178,7 @@ class MainActivity : Activity() {
     private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
         runOnUiThread {
             refreshShizukuState()
-            if (hasShizukuPermission && selectedMode == WorkMode.SHIZUKU) {
+            if (hasShizukuPermission && selectedMode == WorkMode.SHIZUKU && !RootUtils.isMockLocationAllowed(this)) {
                 grantPermissionsViaShizukuAsync()
             }
             updateEnvironmentUI()
@@ -199,11 +200,11 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     refreshShizukuState()
                     if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                        shizukuAutoGrantTried = false
                         selectedMode = WorkMode.SHIZUKU
                         saveSelectedMode(WorkMode.SHIZUKU)
                         applyModeDefaults(WorkMode.SHIZUKU)
-                        grantPermissionsViaShizukuAsync()
-                        toast("Shizuku 已授权，已自动放行模拟位置权限")
+                        grantPermissionsViaShizukuAsync(showResultToast = true)
                     } else {
                         toast("未授予 Shizuku 权限")
                     }
@@ -254,15 +255,24 @@ class MainActivity : Activity() {
     private fun refreshShizukuState() {
         hasShizukuBinder = ShizukuHelper.isBinderAlive()
         hasShizukuPermission = ShizukuHelper.hasPermission()
+        if (!hasShizukuPermission) {
+            shizukuAutoGrantTried = false
+        }
     }
 
-    private fun grantPermissionsViaShizukuAsync() {
+    private fun grantPermissionsViaShizukuAsync(showResultToast: Boolean = false) {
         ShizukuHelper.runShizukuTask {
-            val ok = ShizukuHelper.grantMockAndLocationPermissions(packageName)
-            if (ok) {
-                runOnUiThread {
-                    updateEnvironmentUI()
-                    modeDialogRefreshCallback?.invoke()
+            val ok = ShizukuHelper.grantMockAndLocationPermissions(this)
+            shizukuAutoGrantTried = true
+            runOnUiThread {
+                updateEnvironmentUI()
+                modeDialogRefreshCallback?.invoke()
+                if (showResultToast) {
+                    if (ok) {
+                        toast("Shizuku 已自动放行模拟位置权限 ✓")
+                    } else {
+                        toast("当前系统 ROM 限制自动修改模拟位置，请在开发者选项中手动选择本应用")
+                    }
                 }
             }
         }
@@ -282,7 +292,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshShizukuState()
-        if (hasShizukuPermission && selectedMode == WorkMode.SHIZUKU && !RootUtils.isMockLocationAllowed(this)) {
+        if (hasShizukuPermission && selectedMode == WorkMode.SHIZUKU && !RootUtils.isMockLocationAllowed(this) && !shizukuAutoGrantTried) {
             grantPermissionsViaShizukuAsync()
         }
         updateEnvironmentUI()
@@ -334,6 +344,10 @@ class MainActivity : Activity() {
                     showFirstActivationRebootDialog()
                 selectedMode == WorkMode.SHIZUKU && !hasShizukuPermission ->
                     handleShizukuConnectAction()
+                selectedMode == WorkMode.SHIZUKU && hasShizukuPermission && !RootUtils.isMockLocationAllowed(this) && shizukuAutoGrantTried ->
+                    openDeveloperOptions()
+                selectedMode == WorkMode.ROOTLESS_BASIC && !RootUtils.isMockLocationAllowed(this) ->
+                    openDeveloperOptions()
                 else ->
                     showEnvironmentGuideDialog()
             }
@@ -392,7 +406,7 @@ class MainActivity : Activity() {
             if (!v.isEnabled && event.action == MotionEvent.ACTION_UP) {
                 val reason = when {
                     v.id == R.id.cbIptables ->
-                        "「内核阻断」需要 Root 权限，当前模式下请使用「系统GPS注入」即可"
+                        "「内核阻断」需要 Root 权限，免 Root 模式下请开启「VPN阻断(推荐)」"
                     selectedMode == WorkMode.ROOT_LSPOSED && hasXposed && !hasSystemHookActive ->
                         "LSPosed 模块已激活，需先重启手机加载系统 Hook 后才可开启「防基站/WiFi漂移」"
                     else ->
@@ -474,15 +488,14 @@ class MainActivity : Activity() {
                     checked = shizukuAutoSuppressScan,
                     label = "自动关扫描(Shizuku)"
                 )
-                // 默认不开启局部 VPN，避免干扰微信/高德等正常网络连接；仅在特定定位 SDK 漂移时按需手动开启
-                setCheckboxState(cbVpn, enabled = true, checked = false, label = "VPN阻断(可选)")
+                // 免 Root 下默认开启局部 RST-VPN 阻断腾讯/高德/百度网络定位接口，使微信等应用快速回落虚拟 GPS
+                setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
             }
             WorkMode.ROOTLESS_BASIC -> {
                 setCheckboxState(cbSystemMock, enabled = true, checked = true, label = "系统GPS注入")
                 setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                 setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-                // 默认不开启局部 VPN，确保微信/高德正常联网
-                setCheckboxState(cbVpn, enabled = true, checked = false, label = "VPN阻断(可选)")
+                setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
             }
         }
         ConfigManager.save(this, buildCurrentConfig(enabled = false), syncTmpWithRoot = false)
@@ -511,7 +524,8 @@ class MainActivity : Activity() {
             if (rootOk) {
                 RootUtils.grantMockAndLocationPermissions(packageName)
             } else if (ShizukuHelper.hasPermission()) {
-                ShizukuHelper.grantMockAndLocationPermissions(packageName)
+                ShizukuHelper.grantMockAndLocationPermissions(this)
+                shizukuAutoGrantTried = true
             }
             runOnUiThread {
                 hasRoot = rootOk
@@ -644,30 +658,51 @@ class MainActivity : Activity() {
                     setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
                     setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                     setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-                    setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(可选)")
+                    setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
                 }
             }
 
             WorkMode.SHIZUKU -> {
                 val mockAllowed = RootUtils.isMockLocationAllowed(this)
-                tvSubtitleMode.text = "免 Root · Shizuku 自动授权 + 自动关扫描"
+                tvSubtitleMode.text = "免 Root · Shizuku 自动授权 + 防扫描 + RST-VPN"
                 tvRootStatus.text = "模式: Shizuku增强 ›"
                 tvRootStatus.setTextColor(Color.parseColor("#2563EB"))
 
                 cardDegradedBanner.visibility = View.VISIBLE
                 if (hasShizukuPermission) {
-                    tvXposedStatus.text = if (mockAllowed) "Shizuku: 已就绪 ✓" else "Shizuku: 授权中..."
-                    tvXposedStatus.setTextColor(Color.parseColor("#059669"))
-                    tvDegradedTitle.text = "Shizuku 免 Root 增强模式已就绪"
-                    tvDegradedDesc.text =
-                        "已自动放行模拟位置；开启漂移时自动关闭后台 Wi-Fi/蓝牙扫描防回弹（不拦截正常上网，微信/高德正常联网；受 SELinux 限制无法抹除 isMock 或隔离基站）。"
-                    btnDegradedAction.text = "模式对比 ›"
+                    when {
+                        mockAllowed -> {
+                            tvXposedStatus.text = "Shizuku: 已就绪 ✓"
+                            tvXposedStatus.setTextColor(Color.parseColor("#059669"))
+                            tvDegradedTitle.text = "Shizuku 免 Root 增强模式已就绪"
+                            tvDegradedDesc.text =
+                                "已自动放行模拟位置；漂移时自动临时关闭 Wi-Fi/蓝牙扫描，配合局部 RST-VPN 阻断腾讯/高德等网络定位接口（微信/高德均生效）。"
+                            btnDegradedAction.text = "模式对比 ›"
+                        }
+                        !shizukuAutoGrantTried -> {
+                            tvXposedStatus.text = "Shizuku: 自动放行中..."
+                            tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
+                            tvDegradedTitle.text = "正在通过 Shizuku 自动放行模拟位置..."
+                            tvDegradedDesc.text =
+                                "正在调用系统 AppOps 接口配置模拟位置权限，请稍候。"
+                            btnDegradedAction.text = "模式对比 ›"
+                            grantPermissionsViaShizukuAsync()
+                        }
+                        else -> {
+                            tvXposedStatus.text = "模拟位置: 需手动设 ›"
+                            tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
+                            tvDegradedTitle.text = "⚠️ 需在开发者选项中手动勾选模拟位置应用"
+                            tvDegradedDesc.text =
+                                "Shizuku 已连接（自动关扫描正常），但当前手机系统 ROM 限制 ADB 权限自动修改模拟位置。请点右侧前往「开发者选项 → 选择模拟位置信息应用」选中本应用。"
+                            btnDegradedAction.text = "去开发者选项 ›"
+                        }
+                    }
                 } else if (hasShizukuBinder) {
                     tvXposedStatus.text = "Shizuku: 待授权 ›"
                     tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
                     tvDegradedTitle.text = "检测到 Shizuku 服务运行中，请授予权限"
                     tvDegradedDesc.text =
-                        "点击右侧「立即授权」放行 Shizuku 后，即可免开发者选项自动配置模拟定位并自动关闭系统 Wi-Fi/蓝牙扫描。"
+                        "点击右侧「立即授权」放行 Shizuku 后，即可自动配置模拟定位并自动关闭系统 Wi-Fi/蓝牙扫描。"
                     btnDegradedAction.text = "立即授权 ›"
                 } else {
                     val installed = ShizukuHelper.isShizukuInstalled(this)
@@ -694,12 +729,12 @@ class MainActivity : Activity() {
                     checked = shizukuAutoSuppressScan,
                     label = "自动关扫描(Shizuku)"
                 )
-                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(可选)")
+                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
             }
 
             WorkMode.ROOTLESS_BASIC -> {
                 val mockAllowed = RootUtils.isMockLocationAllowed(this)
-                tvSubtitleMode.text = "纯免 Root 基础模式 · 系统模拟定位"
+                tvSubtitleMode.text = "纯免 Root 基础模式 · 系统模拟定位 + RST-VPN"
                 tvRootStatus.text = "模式: 纯免Root基础 ›"
                 tvRootStatus.setTextColor(Color.parseColor("#D97706"))
 
@@ -709,7 +744,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                     tvDegradedTitle.text = "纯免 Root 基础模式已就绪"
                     tvDegradedDesc.text =
-                        "已启用系统模拟位置（不接管系统网络，微信/高德正常联网）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描防回弹，或切换至 Shizuku 模式自动接管。"
+                        "已启用系统GPS + 局部RST-VPN（主动回发 TCP RST 阻断网络定位接口，支持微信与高德地图）。建议在系统位置服务中关闭 Wi-Fi/蓝牙扫描。"
                     btnDegradedAction.text = "防漂移指南 ›"
                 } else {
                     tvXposedStatus.text = "模拟定位: 未设置 ›"
@@ -723,7 +758,7 @@ class MainActivity : Activity() {
                 setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
                 setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                 setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(可选)")
+                setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
             }
         }
     }
@@ -732,8 +767,8 @@ class MainActivity : Activity() {
         refreshShizukuState()
         when {
             hasShizukuPermission -> {
-                grantPermissionsViaShizukuAsync()
-                toast("Shizuku 已授权")
+                shizukuAutoGrantTried = false
+                grantPermissionsViaShizukuAsync(showResultToast = true)
             }
             hasShizukuBinder -> {
                 if (ShizukuHelper.shouldShowRationale()) {
@@ -857,7 +892,7 @@ class MainActivity : Activity() {
                 text = cons
                 setTextColor(Color.parseColor("#64748B"))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                setLineSpacing(dp(2).toFloat(), 1f)
+                setLineSpacing(dp(1.5f).toFloat(), 1f)
                 setPadding(dp(20), dp(3), 0, 0)
             }
             card.addView(tvCons)
@@ -880,10 +915,10 @@ class MainActivity : Activity() {
         val cShizuku = buildModeCard(
             WorkMode.SHIZUKU,
             "2. 免 Root + Shizuku 增强模式",
-            "免 Root 推荐 · 自动授权 + 自动防扫描",
-            "✓ 无需 Root，通过 Shizuku (ADB 权限) 一键自动放行模拟位置\n" +
+            "免 Root 推荐 · 自动授权 + 自动防扫描 + RST-VPN",
+            "✓ 无需 Root，通过 Shizuku 自动放行模拟位置权限\n" +
                 "✓ 漂移时自动临时关闭系统 Wi-Fi/蓝牙扫描防回弹，停止自动还原\n" +
-                "✓ 不改变设备正常联网通道，微信/高德地图正常使用",
+                "✓ 局部 RST-VPN 精准拒止网络定位接口，微信/高德均有效",
             "✗ 差别：受 SELinux 限制，无法抹除 isMock 标记或隐藏蜂窝基站"
         )
         cardRefs.add(cShizuku)
@@ -892,13 +927,12 @@ class MainActivity : Activity() {
             WorkMode.ROOTLESS_BASIC,
             "3. 纯免 Root 基础降级模式",
             "零外部依赖 · 无需 Root 也无需 Shizuku",
-            "✓ 开箱即用，仅依赖系统公开模拟位置 API\n" +
-                "✓ 不改变设备正常联网通道，微信/高德地图正常使用",
+            "✓ 开箱即用，依赖系统公开模拟位置 API 与局部 RST-VPN\n" +
+                "✓ 局部 VPN 仅拦截定位域名并放行聊天通道，微信/高德均有效",
             "✗ 差别：需手动去开发者选项授权并手动关扫描；无法隐藏 isMock/基站"
         )
         cardRefs.add(cBasic)
 
-        // Shizuku 快捷授权/启动操作条
         val shizukuActionBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -936,7 +970,6 @@ class MainActivity : Activity() {
         shizukuActionBox.addView(btnShizukuQuick)
         root.addView(shizukuActionBox)
 
-        // 启动弹窗频率控制勾选框
         val uiPrefs = getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
         val cbRememberSkip = CheckBox(this).apply {
             text = "下次启动直接进入已选模式（仍可点顶部「切换模式」更改）"
@@ -981,7 +1014,8 @@ class MainActivity : Activity() {
                         else -> Triple("无Root权限", "#DC2626", "#FEE2E2")
                     }
                     WorkMode.SHIZUKU -> when {
-                        hasShizukuPermission -> Triple("已授权 ✓", "#059669", "#D1FAE5")
+                        hasShizukuPermission && mockAllowed -> Triple("已就绪 ✓", "#059669", "#D1FAE5")
+                        hasShizukuPermission -> Triple("已授权·待设模拟位置", "#D97706", "#FEF3C7")
                         hasShizukuBinder -> Triple("运行中·待授权", "#D97706", "#FEF3C7")
                         ShizukuHelper.isShizukuInstalled(this) -> Triple("未启动", "#DC2626", "#FEE2E2")
                         else -> Triple("未安装", "#64748B", "#E2E8F0")
@@ -1045,7 +1079,8 @@ class MainActivity : Activity() {
                     applyModeDefaults(pendingMode)
                     if (pendingMode == WorkMode.SHIZUKU) {
                         if (hasShizukuPermission) {
-                            grantPermissionsViaShizukuAsync()
+                            shizukuAutoGrantTried = false
+                            grantPermissionsViaShizukuAsync(showResultToast = true)
                         } else if (hasShizukuBinder) {
                             ShizukuHelper.requestPermission(REQ_SHIZUKU)
                         }
@@ -1324,11 +1359,16 @@ class MainActivity : Activity() {
                 addStatusCheckRow(
                     statusCard,
                     "2. 模拟位置权限",
-                    if (mockAllowed) "已自动放行 ✓" else "授权 Shizuku 后自动放行",
-                    if (mockAllowed) "#059669" else "#D97706"
+                    when {
+                        mockAllowed -> "已自动放行 ✓"
+                        hasShizukuPermission && shizukuAutoGrantTried -> "需在开发者选项手动设置 ✗"
+                        else -> "授权 Shizuku 后自动放行"
+                    },
+                    if (mockAllowed) "#059669" else "#DC2626"
                 )
                 addStatusCheckRow(statusCard, "3. 自动关Wi-Fi/蓝牙扫描", "支持 (停止漂移自动恢复)", "#059669")
-                addStatusCheckRow(statusCard, "4. 抹除isMock / 基站隔离", "不支持 (受SELinux隔离限制)", "#64748B")
+                addStatusCheckRow(statusCard, "4. 局部 RST-VPN 阻断", "已适配微信/高德双栈定位接口", "#059669")
+                addStatusCheckRow(statusCard, "5. 抹除isMock / 基站隔离", "不支持 (受SELinux隔离限制)", "#64748B")
             }
             WorkMode.ROOTLESS_BASIC -> {
                 addStatusCheckRow(statusCard, "当前模式", "纯免 Root 基础降级模式", "#D97706")
@@ -1338,7 +1378,7 @@ class MainActivity : Activity() {
                     if (mockAllowed) "已授权 ✓" else "未设置 (必须配置) ✗",
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
-                addStatusCheckRow(statusCard, "2. 正常联网兼容性", "不接管网络 (微信/高德正常)", "#059669")
+                addStatusCheckRow(statusCard, "2. 局部 RST-VPN 通道", "已适配微信/高德双栈定位接口", "#059669")
                 addStatusCheckRow(statusCard, "3. 抹除isMock / 基站隔离", "不支持 (需Root+LSPosed)", "#64748B")
             }
         }
@@ -1356,14 +1396,19 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "自动化防漂移机制（不改变正常网络路由）",
-                    "开启漂移时，本应用会自动通过 Shizuku 放行模拟位置权限，并临时关闭系统后台「Wi-Fi 扫描」与「蓝牙扫描」以防室内定位回弹；停止漂移时自动恢复原开关状态。"
+                    if (mockAllowed) "模拟位置权限（已放行）" else "确认模拟位置权限",
+                    if (mockAllowed) {
+                        "已成功放行模拟位置权限，开启漂移时还会自动临时关闭系统「Wi-Fi 扫描」与「蓝牙扫描」以防室内回弹。"
+                    } else {
+                        "若当前手机系统 ROM 限制 Shizuku 自动修改模拟位置权限，请点击下方「打开开发者选项」，在「选择模拟位置信息应用」中手动选中「定位漂移助手」。"
+                    },
+                    highlight = hasShizukuPermission && !mockAllowed
                 )
                 addStepCard(
                     root,
-                    "!",
-                    "关于「VPN阻断(可选)」与完整模式的差异",
-                    "默认无需勾选 VPN 阻断即可保持微信、高德等应用完全正常联网。Shizuku 运行在 ADB Shell (UID 2000) 域，无法注入 system_server，因此无法抹除 Location.isMock() 标记或隐藏蜂窝基站。"
+                    "3",
+                    "保持开启「VPN阻断(推荐)」以支持微信定位",
+                    "局部 RST-VPN 仅对腾讯/高德/百度网络定位域名建立双栈主机路由并立即回发 TCP RST，同时放行微信消息通道，迫使微信内置定位 SDK 回落至虚拟 GPS。"
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1377,8 +1422,8 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "保持默认「系统GPS注入」（无需开 VPN）",
-                    "默认仅启用系统模拟定位，不接管设备网络路由，微信与高德地图均可正常联网。"
+                    "保持开启「系统GPS注入 + VPN阻断(推荐)」",
+                    "局部 VPN 仅对腾讯/高德/百度网络定位域名建立精准双栈路由并主动回发 TCP RST，不会阻断微信聊天与正常上网，可迫使微信等应用快速回落至虚拟 GPS。"
                 )
                 addStepCard(
                     root,
@@ -1433,6 +1478,11 @@ class MainActivity : Activity() {
             selectedMode == WorkMode.SHIZUKU && !hasShizukuPermission -> {
                 builder.setPositiveButton(if (hasShizukuBinder) "立即授权 Shizuku" else "打开 Shizuku") { _, _ ->
                     handleShizukuConnectAction()
+                }
+            }
+            selectedMode == WorkMode.SHIZUKU && !mockAllowed -> {
+                builder.setPositiveButton("打开开发者选项") { _, _ ->
+                    openDeveloperOptions()
                 }
             }
             selectedMode == WorkMode.ROOTLESS_BASIC -> {
@@ -1498,17 +1548,27 @@ class MainActivity : Activity() {
                     handleShizukuConnectAction()
                     return
                 }
-                isEnabled = true
                 val cfg = buildCurrentConfig(enabled = true)
-                ConfigManager.save(this, cfg, syncTmpWithRoot = false)
                 val suppressScan = shizukuAutoSuppressScan
 
                 ShizukuHelper.runShizukuTask {
-                    ShizukuHelper.grantMockAndLocationPermissions(packageName)
+                    val mockOk = ShizukuHelper.grantMockAndLocationPermissions(this)
+                    shizukuAutoGrantTried = true
+                    if (cfg.enableSystemMock && !mockOk) {
+                        runOnUiThread {
+                            updateEnvironmentUI()
+                            toast("当前系统限制 Shizuku 自动放行模拟位置，请在开发者选项中手动选中本应用")
+                            openDeveloperOptions()
+                        }
+                        return@runShizukuTask
+                    }
                     if (suppressScan) {
                         ShizukuHelper.applyAntiDriftScanSuppression(this)
                     }
                     runOnUiThread {
+                        isEnabled = true
+                        ConfigManager.save(this, cfg, syncTmpWithRoot = false)
+                        updateEnvironmentUI()
                         launchForegroundServices(cfg)
                         refreshRunStatusUI()
                         toast(

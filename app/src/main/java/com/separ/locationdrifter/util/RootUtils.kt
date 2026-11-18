@@ -38,7 +38,7 @@ object RootUtils {
     }
 
     /**
-     * 免 Root 环境下检测当前应用是否已在「开发者选项 -> 选择模拟位置信息应用」中被授权
+     * 免 Root 环境下检测当前应用是否已被授予模拟位置权限
      */
     fun isMockLocationAllowed(context: Context): Boolean {
         return try {
@@ -89,7 +89,7 @@ object RootUtils {
      */
     fun grantMockAndLocationPermissions(packageName: String): Boolean {
         val cmd = """
-            appops set $packageName android:mock_location allow
+            appops set --user 0 $packageName android:mock_location allow 2>/dev/null || appops set $packageName android:mock_location allow
             pm grant $packageName android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
             pm grant $packageName android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true
             pm grant $packageName android.permission.POST_NOTIFICATIONS 2>/dev/null || true
@@ -115,23 +115,30 @@ object RootUtils {
     private const val IPTABLES_CHAIN = "LOC_DRIFT_BLOCK"
 
     /**
-     * 仅针对高频网络定位域名下发内核 REJECT 规则：
-     * 1) 当网络定位请求在内核层收到 REJECT 响应后会立即回落到系统 LocationManager。
-     * 2) 不在内核层一刀切阻断在线逆地理编码接口 (如 isNeedAddress=true 场景)，
-     *    避免强依赖服务端逆地理编码的定位 SDK 因连接被拒直接返回网络异常错误码；
-     *    其余网络定位 SDK 的防漂移由系统层 Wi-Fi/基站/ServiceState 源头隔离保障。
+     * 高频网络定位 SDK 域名列表（覆盖微信内置腾讯定位 SDK、高德/百度网络定位接口）：
+     * 当网络定位请求收到 TCP RST / ICMP Port Unreachable 后会立即回落到系统 LocationManager 虚拟 GPS。
      */
     val LBS_HOSTS = listOf(
         "lbs.map.qq.com",
         "c.map.qq.com",
         "loc.map.qq.com",
-        "datalbs.map.qq.com"
+        "datalbs.map.qq.com",
+        "apis.map.qq.com",
+        "rtt.map.qq.com",
+        "ping.map.qq.com",
+        "pr.map.qq.com",
+        "apilocate.amap.com",
+        "cgicol.amap.com",
+        "loc.map.baidu.com",
+        "ofloc.map.baidu.com"
     )
 
-    // 微信与腾讯基础通讯域名：避免三层 IP 拦截与腾讯共享 Anycast VIP 冲突导致微信断网
+    // 微信核心长/短连接及基础业务域名：避免三层 IP 拦截与微信 mmtls 节点冲突导致微信离线
     val PROTECTED_TENCENT_HOSTS = listOf(
         "szshort.weixin.qq.com",
         "szlong.weixin.qq.com",
+        "szextshort.weixin.qq.com",
+        "szminorshort.weixin.qq.com",
         "short.weixin.qq.com",
         "long.weixin.qq.com",
         "dns.weixin.qq.com",
@@ -194,7 +201,6 @@ object RootUtils {
     ) {
         sb.append("$bin -t filter -N $IPTABLES_CHAIN 2>/dev/null || true\n")
         sb.append("$bin -t filter -F $IPTABLES_CHAIN 2>/dev/null || true\n")
-        // 放行标准 DNS / 私人 DNS (DoT 853) / 本地代理 DNS，避免域名解析本身被误伤
         for (port in listOf(53, 853, 1053)) {
             sb.append("$bin -t filter -A $IPTABLES_CHAIN -p udp --dport $port -j RETURN 2>/dev/null || true\n")
             sb.append("$bin -t filter -A $IPTABLES_CHAIN -p tcp --dport $port -j RETURN 2>/dev/null || true\n")
