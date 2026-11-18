@@ -1,6 +1,9 @@
 package com.separ.locationdrifter
 
 import android.Manifest
+import android.animation.ArgbEvaluator
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
@@ -21,15 +24,20 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.transition.AutoTransition
+import android.transition.TransitionManager
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
+import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -76,6 +84,7 @@ class MainActivity : Activity() {
         private const val KEY_SHIZUKU_AUTO_SUPPRESS_SCAN = "shizuku_auto_suppress_scan"
         private const val KEY_SHIZUKU_ISOLATE_TARGET_APPS = "shizuku_isolate_target_apps"
         private const val KEY_VPN_DEFAULT_MIGRATED_V2 = "vpn_default_migrated_v2"
+        private const val KEY_CACHED_HAS_ROOT = "cached_has_root"
         private const val PROBE_PROVIDER = "location_drifter_probe"
         private val searchPool = Executors.newCachedThreadPool()
         private val searchGeneration = AtomicInteger(0)
@@ -204,8 +213,12 @@ class MainActivity : Activity() {
     private var shizukuAutoSuppressScan = true
     private var shizukuIsolateTargetApps = false
     private var isEnabled = false
+    private var lastRenderedEnabled: Boolean? = null
     private var suppressCheckboxCallback = false
     private var isImeVisible = false
+
+    private var btnColorAnimator: ValueAnimator? = null
+    private var statusPulseAnimator: ObjectAnimator? = null
 
     private var modeDialog: AlertDialog? = null
     private var modeDialogRefreshCallback: (() -> Unit)? = null
@@ -283,6 +296,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        btnColorAnimator?.cancel()
+        statusPulseAnimator?.cancel()
         try {
             rootMainLayout.viewTreeObserver.removeOnGlobalLayoutListener(keyboardLayoutListener)
         } catch (_: Throwable) {
@@ -319,6 +334,12 @@ class MainActivity : Activity() {
     }
 
     private fun grantPermissionsViaShizukuAsync(showResultToast: Boolean = false) {
+        if (RootUtils.isMockLocationAllowed(this)) {
+            shizukuAutoGrantTried = true
+            updateEnvironmentUI()
+            modeDialogRefreshCallback?.invoke()
+            return
+        }
         ShizukuHelper.runShizukuTask {
             val ok = ShizukuHelper.grantMockAndLocationPermissions(this)
             shizukuAutoGrantTried = true
@@ -355,7 +376,7 @@ class MainActivity : Activity() {
             grantPermissionsViaShizukuAsync()
         }
         updateEnvironmentUI()
-        refreshRunStatusUI()
+        refreshRunStatusUI(animate = false)
         refreshFavoritesCount()
         modeDialogRefreshCallback?.invoke()
     }
@@ -378,6 +399,31 @@ class MainActivity : Activity() {
                     ShizukuHelper.restoreAllAntiDriftStates(this)
                 }
             }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun attachPressScaleEffect(view: View, pressedScale: Float = 0.965f) {
+        view.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate()
+                        .scaleX(pressedScale)
+                        .scaleY(pressedScale)
+                        .setDuration(90L)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.animate()
+                        .scaleX(1.0f)
+                        .scaleY(1.0f)
+                        .setDuration(140L)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+            }
+            false
         }
     }
 
@@ -415,11 +461,24 @@ class MainActivity : Activity() {
         btnToggleDrift = findViewById(R.id.btnToggleDrift)
         btnUpdatePoint = findViewById(R.id.btnUpdatePoint)
 
+        val btnInputCoord = findViewById<Button>(R.id.btnInputCoord)
+        val btnAddFavorite = findViewById<Button>(R.id.btnAddFavorite)
+
+        attachPressScaleEffect(btnToggleDrift, 0.97f)
+        attachPressScaleEffect(btnUpdatePoint, 0.96f)
+        attachPressScaleEffect(btnSearchPlace, 0.95f)
+        attachPressScaleEffect(btnInputCoord, 0.96f)
+        attachPressScaleEffect(btnAddFavorite, 0.96f)
+        attachPressScaleEffect(btnFavorites, 0.96f)
+        attachPressScaleEffect(btnSwitchMode, 0.95f)
+        attachPressScaleEffect(btnHelpGuide, 0.95f)
+        attachPressScaleEffect(btnCopyCoord, 0.95f)
+
         setupNativeSearchBar()
 
         btnCopyCoord.setOnClickListener { copyCurrentCoordsToClipboard() }
-        findViewById<Button>(R.id.btnInputCoord).setOnClickListener { showManualCoordDialog() }
-        findViewById<Button>(R.id.btnAddFavorite).setOnClickListener { showAddFavoriteDialog() }
+        btnInputCoord.setOnClickListener { showManualCoordDialog() }
+        btnAddFavorite.setOnClickListener { showAddFavoriteDialog() }
         btnFavorites.setOnClickListener { showFavoritesDialog() }
 
         btnSwitchMode.setOnClickListener {
@@ -451,6 +510,7 @@ class MainActivity : Activity() {
         tvXposedStatus.setOnClickListener(bannerOrActionClick)
 
         btnToggleDrift.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             if (isEnabled) {
                 stopDrifting()
             } else {
@@ -459,6 +519,7 @@ class MainActivity : Activity() {
         }
 
         btnUpdatePoint.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             if (isEnabled) {
                 applyUpdatedCoordinates()
             }
@@ -611,7 +672,9 @@ class MainActivity : Activity() {
                 candidatesList.addView(divider)
             }
         }
+        candidatesScroll.alpha = 0f
         candidatesScroll.visibility = View.VISIBLE
+        candidatesScroll.animate().alpha(1f).setDuration(160L).start()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -703,8 +766,14 @@ class MainActivity : Activity() {
 
     private fun loadSavedState() {
         val uiPrefs = getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
-        WorkMode.fromKey(uiPrefs.getString(KEY_SELECTED_WORK_MODE, null))?.let {
+        val savedRaw = uiPrefs.getString(KEY_SELECTED_WORK_MODE, null)
+        WorkMode.fromKey(savedRaw)?.let {
             selectedMode = it
+        }
+        // 预加载上次缓存的 Root 状态，冷启动首帧零延迟渲染，无需等待 su 子进程
+        if (savedRaw != null) {
+            hasRoot = uiPrefs.getBoolean(KEY_CACHED_HAS_ROOT, false)
+            rootCheckCompleted = true
         }
         shizukuAutoSuppressScan = uiPrefs.getBoolean(KEY_SHIZUKU_AUTO_SUPPRESS_SCAN, true)
         shizukuIsolateTargetApps = uiPrefs.getBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, false)
@@ -738,7 +807,7 @@ class MainActivity : Activity() {
         suppressCheckboxCallback = false
 
         updateCoordTexts()
-        refreshRunStatusUI()
+        refreshRunStatusUI(animate = false)
         refreshFavoritesCount()
     }
 
@@ -793,15 +862,23 @@ class MainActivity : Activity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun initWebView() {
+        webMap.alpha = 0.0f
         webMap.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             allowFileAccess = true
             useWideViewPort = true
             loadWithOverviewMode = true
+            cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
         }
         webMap.webChromeClient = WebChromeClient()
-        webMap.webViewClient = WebViewClient()
+        webMap.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                if (webMap.alpha < 1f) {
+                    webMap.animate().alpha(1f).setDuration(220L).start()
+                }
+            }
+        }
         webMap.addJavascriptInterface(MapJsBridge(), "AndroidBridge")
         webMap.loadUrl("file:///android_asset/map.html")
     }
@@ -812,12 +889,16 @@ class MainActivity : Activity() {
         RootUtils.runRootTask {
             val rootOk = RootUtils.isRootAvailable()
             if (rootOk) {
-                RootUtils.grantMockAndLocationPermissions(packageName)
+                if (!RootUtils.isMockLocationAllowed(this)) {
+                    RootUtils.grantMockAndLocationPermissions(packageName)
+                }
                 if (!isEnabled) {
                     RootUtils.disableIptablesBlock()
                 }
             } else if (ShizukuHelper.hasPermission()) {
-                ShizukuHelper.grantMockAndLocationPermissions(this)
+                if (!RootUtils.isMockLocationAllowed(this)) {
+                    ShizukuHelper.grantMockAndLocationPermissions(this)
+                }
                 shizukuAutoGrantTried = true
                 if (!isEnabled) {
                     ShizukuHelper.restoreAllAntiDriftStates(this)
@@ -829,6 +910,8 @@ class MainActivity : Activity() {
                 rootCheckCompleted = true
 
                 val uiPrefs = getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                uiPrefs.edit().putBoolean(KEY_CACHED_HAS_ROOT, rootOk).apply()
+
                 val savedRaw = uiPrefs.getString(KEY_SELECTED_WORK_MODE, null)
                 if (savedRaw == null) {
                     selectedMode = when {
@@ -1251,7 +1334,7 @@ class MainActivity : Activity() {
             val statusBadge = TextView(this).apply {
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
                 typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(8), dp(2.5f.toInt()), dp(8), dp(2.5f.toInt()))
+                setPadding(dp(8), dp(2), dp(8), dp(2))
             }
 
             topRow.addView(radio)
@@ -1601,7 +1684,7 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(3.5f.toInt()), 0, dp(3.5f.toInt()))
+            setPadding(0, dp(3), 0, dp(3))
         }
         val tvLabel = TextView(this).apply {
             text = label
@@ -1942,32 +2025,48 @@ class MainActivity : Activity() {
                 val cfg = buildCurrentConfig(enabled = true)
                 val suppressScan = shizukuAutoSuppressScan
                 val isolateApps = shizukuIsolateTargetApps
+                val alreadyMockAllowed = RootUtils.isMockLocationAllowed(this)
+
+                // 乐观响应：立即切换按钮过渡动画与运行状态，消除点击卡顿感
+                isEnabled = true
+                ConfigManager.save(this, cfg, syncTmpWithRoot = false)
+                refreshRunStatusUI(animate = true)
+                if (alreadyMockAllowed) {
+                    launchForegroundServices(cfg)
+                }
 
                 ShizukuHelper.runShizukuTask {
-                    val mockOk = ShizukuHelper.grantMockAndLocationPermissions(this)
+                    val mockOk = if (alreadyMockAllowed) {
+                        true
+                    } else {
+                        ShizukuHelper.grantMockAndLocationPermissions(this)
+                    }
                     shizukuAutoGrantTried = true
+
                     if (cfg.enableSystemMock && !mockOk) {
                         runOnUiThread {
+                            isEnabled = false
+                            ConfigManager.save(this, cfg.copy(enabled = false), syncTmpWithRoot = false)
+                            stopVpnService()
                             updateEnvironmentUI()
+                            refreshRunStatusUI(animate = true)
                             toast("请在开发者选项中手动选择本应用")
                             openDeveloperOptions()
                         }
                         return@runShizukuTask
                     }
-                    if (suppressScan) {
-                        ShizukuHelper.applyAntiDriftScanSuppression(this)
-                    }
-                    val isolatedCount = if (isolateApps) {
-                        ShizukuHelper.applyTargetAppLocationIsolation(this)
-                    } else {
-                        0
-                    }
+
+                    val isolatedCount = ShizukuHelper.applyBatchAntiDrift(
+                        this,
+                        suppressScan = suppressScan,
+                        isolateTargets = isolateApps
+                    )
+
                     runOnUiThread {
-                        isEnabled = true
-                        ConfigManager.save(this, cfg, syncTmpWithRoot = false)
+                        if (!alreadyMockAllowed && isEnabled) {
+                            launchForegroundServices(cfg)
+                        }
                         updateEnvironmentUI()
-                        launchForegroundServices(cfg)
-                        refreshRunStatusUI()
                         val msg = when {
                             isolatedCount > 0 -> "已开启（已隔离 $isolatedCount 个指定应用）"
                             suppressScan -> "已开启（已自动关扫描）"
@@ -1987,8 +2086,8 @@ class MainActivity : Activity() {
                 isEnabled = true
                 val cfg = buildCurrentConfig(enabled = true)
                 ConfigManager.save(this, cfg, syncTmpWithRoot = false)
+                refreshRunStatusUI(animate = true)
                 launchForegroundServices(cfg)
-                refreshRunStatusUI()
                 toast("已开启定位漂移")
             }
 
@@ -2000,32 +2099,19 @@ class MainActivity : Activity() {
                         return
                     }
                 }
+                // 乐观响应：立即执行平滑过渡动画并拉起服务，后台单次 su 写入配置与 iptables
                 isEnabled = true
                 val cfg = buildCurrentConfig(enabled = true)
                 ConfigManager.save(this, cfg, syncTmpWithRoot = false)
                 val json = ConfigManager.toJson(cfg).toString()
+                refreshRunStatusUI(animate = true)
+                launchForegroundServices(cfg)
+                toast("已开启定位漂移")
 
                 if (hasRoot) {
                     RootUtils.runRootTask {
-                        if (RootUtils.isRootAvailable()) {
-                            RootUtils.grantMockAndLocationPermissions(packageName)
-                            RootUtils.writeTmpConfigJson(json)
-                            if (cfg.enableIptables) {
-                                RootUtils.enableIptablesBlock()
-                            } else {
-                                RootUtils.disableIptablesBlock()
-                            }
-                        }
-                        runOnUiThread {
-                            launchForegroundServices(cfg)
-                            refreshRunStatusUI()
-                            toast("已开启定位漂移")
-                        }
+                        RootUtils.applyRootConfigAndIptables(json, cfg.enableIptables)
                     }
-                } else {
-                    launchForegroundServices(cfg)
-                    refreshRunStatusUI()
-                    toast("已开启定位漂移")
                 }
             }
         }
@@ -2053,23 +2139,12 @@ class MainActivity : Activity() {
         val cfg = buildCurrentConfig(enabled = true)
         ConfigManager.save(this, cfg, syncTmpWithRoot = false)
         val json = ConfigManager.toJson(cfg).toString()
+        syncActiveServices(cfg, showToast)
 
         if (selectedMode == WorkMode.ROOT_LSPOSED && hasRoot) {
             RootUtils.runRootTask {
-                if (RootUtils.isRootAvailable()) {
-                    RootUtils.writeTmpConfigJson(json)
-                    if (cfg.enableIptables) {
-                        RootUtils.enableIptablesBlock()
-                    } else {
-                        RootUtils.disableIptablesBlock()
-                    }
-                }
-                runOnUiThread {
-                    syncActiveServices(cfg, showToast)
-                }
+                RootUtils.applyRootConfigAndIptables(json, cfg.enableIptables)
             }
-        } else {
-            syncActiveServices(cfg, showToast)
         }
     }
 
@@ -2098,23 +2173,19 @@ class MainActivity : Activity() {
         ConfigManager.save(this, cfg, syncTmpWithRoot = false)
         val json = ConfigManager.toJson(cfg).toString()
 
+        refreshRunStatusUI(animate = true)
         stopService(Intent(this, MockLocationService::class.java))
         stopVpnService()
+        toast("已停止定位漂移")
 
         if (hasRoot) {
             RootUtils.runRootTask {
-                if (RootUtils.isRootAvailable()) {
-                    RootUtils.writeTmpConfigJson(json)
-                    RootUtils.disableIptablesBlock()
-                }
+                RootUtils.applyRootConfigAndIptables(json, enableBlock = false)
             }
         }
         ShizukuHelper.runShizukuTask {
             ShizukuHelper.restoreAllAntiDriftStates(this)
         }
-
-        refreshRunStatusUI()
-        toast("已停止定位漂移")
     }
 
     private fun startMockLocationService() {
@@ -2228,7 +2299,71 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refreshRunStatusUI() {
+    private fun animateToggleDriftButton(toActive: Boolean, animate: Boolean) {
+        btnColorAnimator?.cancel()
+        val radius = dp(14).toFloat()
+        val startStartColor = if (toActive) Color.parseColor("#3B82F6") else Color.parseColor("#EF4444")
+        val endStartColor = if (toActive) Color.parseColor("#EF4444") else Color.parseColor("#3B82F6")
+        val startEndColor = if (toActive) Color.parseColor("#1D4ED8") else Color.parseColor("#DC2626")
+        val endEndColor = if (toActive) Color.parseColor("#DC2626") else Color.parseColor("#1D4ED8")
+
+        if (!animate) {
+            btnToggleDrift.background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(endStartColor, endEndColor)
+            ).apply {
+                cornerRadius = radius
+            }
+            return
+        }
+
+        val evaluator = ArgbEvaluator()
+        btnColorAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 220L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val c1 = evaluator.evaluate(f, startStartColor, endStartColor) as Int
+                val c2 = evaluator.evaluate(f, startEndColor, endEndColor) as Int
+                btnToggleDrift.background = GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    intArrayOf(c1, c2)
+                ).apply {
+                    cornerRadius = radius
+                }
+            }
+            start()
+        }
+    }
+
+    private fun startStatusPulse() {
+        if (statusPulseAnimator?.isRunning == true) return
+        statusPulseAnimator = ObjectAnimator.ofFloat(tvRunStatus, View.ALPHA, 1.0f, 0.55f, 1.0f).apply {
+            duration = 1600L
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopStatusPulse() {
+        statusPulseAnimator?.cancel()
+        statusPulseAnimator = null
+        tvRunStatus.alpha = 1.0f
+    }
+
+    private fun refreshRunStatusUI(animate: Boolean = false) {
+        val stateChanged = lastRenderedEnabled != null && lastRenderedEnabled != isEnabled
+        lastRenderedEnabled = isEnabled
+        val shouldAnimate = animate && stateChanged
+
+        if (shouldAnimate) {
+            val transition = AutoTransition().apply {
+                duration = 220L
+                interpolator = DecelerateInterpolator()
+            }
+            TransitionManager.beginDelayedTransition(bottomControlPanel, transition)
+        }
+
         if (isEnabled) {
             tvRunStatus.text = when (selectedMode) {
                 WorkMode.ROOT_LSPOSED -> "● 运行中"
@@ -2237,24 +2372,22 @@ class MainActivity : Activity() {
             }
             applyPillStyle(tvRunStatus, "#059669", "#ECFDF5", "#A7F3D0")
             btnToggleDrift.text = "停止定位漂移"
-            btnToggleDrift.background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                intArrayOf(Color.parseColor("#EF4444"), Color.parseColor("#DC2626"))
-            ).apply {
-                cornerRadius = dp(14).toFloat()
+            animateToggleDriftButton(toActive = true, animate = shouldAnimate)
+            if (btnUpdatePoint.visibility != View.VISIBLE) {
+                btnUpdatePoint.alpha = if (shouldAnimate) 0f else 1f
+                btnUpdatePoint.visibility = View.VISIBLE
+                if (shouldAnimate) {
+                    btnUpdatePoint.animate().alpha(1f).setDuration(200L).start()
+                }
             }
-            btnUpdatePoint.visibility = View.VISIBLE
+            startStatusPulse()
         } else {
             tvRunStatus.text = "● 未开启"
             applyPillStyle(tvRunStatus, "#64748B", "#F8FAFC", "#E2E8F0")
             btnToggleDrift.text = "开启定位漂移"
-            btnToggleDrift.background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                intArrayOf(Color.parseColor("#3B82F6"), Color.parseColor("#1D4ED8"))
-            ).apply {
-                cornerRadius = dp(14).toFloat()
-            }
+            animateToggleDriftButton(toActive = false, animate = shouldAnimate)
             btnUpdatePoint.visibility = View.GONE
+            stopStatusPulse()
         }
     }
 

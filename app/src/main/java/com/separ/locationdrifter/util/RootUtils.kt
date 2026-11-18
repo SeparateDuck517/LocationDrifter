@@ -17,17 +17,29 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URL
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
- * Root (su) 命令执行与环境权限检测工具
- * 所有异步 Root 任务统一通过单线程队列串行调度，消除并发 su 进程竞争。
+ * Root (su) 命令执行与环境权限检测工具：
+ * 1) 合并批量命令单次 su 执行，消除重复进程拉起开销；
+ * 2) 并行收割网络定位域名边缘 IP 并本地缓存，大幅缩短开启/切换延迟。
  */
 object RootUtils {
 
     private const val OPSTR_MOCK_LOCATION = "android:mock_location"
     private const val PROBE_PROVIDER = "location_drifter_probe"
+    private const val DNS_CACHE_TTL_MS = 180_000L
+
     private val rootTaskExecutor = Executors.newSingleThreadExecutor()
+    private val dnsResolvePool = Executors.newCachedThreadPool()
+
+    @Volatile
+    private var cachedLbsIps: Pair<Set<String>, Set<String>>? = null
+
+    @Volatile
+    private var lastDnsResolveTimeMs = 0L
 
     fun runRootTask(task: () -> Unit) {
         rootTaskExecutor.execute(task)
@@ -47,9 +59,6 @@ object RootUtils {
         return execSu("svc power reboot || reboot").success
     }
 
-    /**
-     * 实时检测当前启动周期 system_server 是否已加载本模块 Hook
-     */
     fun isSystemServerHookActive(context: Context): Boolean {
         if (!ModuleStatus.isModuleActive()) return false
         try {
@@ -128,20 +137,22 @@ object RootUtils {
         return execSu(cmd).success
     }
 
-    fun writeTmpConfigJson(jsonText: String): Boolean {
+    private fun buildWriteTmpConfigScript(jsonText: String): String {
         val escaped = jsonText.replace("'", "'\\''")
-        val cmd = """
+        return """
             settings put global location_drifter_cfg '$escaped' 2>/dev/null || true
             printf '%s' '$escaped' > /data/local/tmp/location_drifter.json
             chmod 644 /data/local/tmp/location_drifter.json
             chcon u:object_r:system_file:s0 /data/local/tmp/location_drifter.json 2>/dev/null || true
         """.trimIndent()
-        return execSu(cmd).success
+    }
+
+    fun writeTmpConfigJson(jsonText: String): Boolean {
+        return execSu(buildWriteTmpConfigScript(jsonText)).success
     }
 
     private const val IPTABLES_CHAIN = "LOC_DRIFT_BLOCK"
 
-    // 网络定位（基站/Wi-Fi 指纹）服务端域名列表
     val LBS_HOSTS = listOf(
         "lbs.map.qq.com",
         "loc.map.qq.com",
@@ -153,7 +164,6 @@ object RootUtils {
         "ofloc.map.baidu.com"
     )
 
-    // 核心长短连接及解析节点域名列表（避免三层 IP 拦截与共享边缘节点冲突）
     val PROTECTED_IM_HOSTS = listOf(
         "szshort.weixin.qq.com",
         "szlong.weixin.qq.com",
@@ -171,8 +181,8 @@ object RootUtils {
         return try {
             conn = (URL("http://119.29.29.29/d?dn=$host").openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 1000
-                readTimeout = 1000
+                connectTimeout = 500
+                readTimeout = 500
             }
             if (conn.responseCode in 200..299) {
                 val body = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
@@ -195,7 +205,7 @@ object RootUtils {
         var socket: DatagramSocket? = null
         return try {
             socket = DatagramSocket()
-            socket.soTimeout = 900
+            socket.soTimeout = 450
             val labels = host.trim('.').split('.')
             val query = ArrayList<Byte>(64)
             query.add(0x13); query.add(0x37)
@@ -269,43 +279,87 @@ object RootUtils {
     }
 
     /**
-     * 兼容 Android 13–16 GKI 内核的 iptables / ip6tables 阻断规则
+     * 并行解析全部网络定位服务器边缘 IP（严格限制总耗时 <= 650ms 并缓存 3 分钟）
      */
-    fun enableIptablesBlock(): Boolean {
-        val protectedIps = HashSet<String>()
-        for (host in PROTECTED_IM_HOSTS) {
-            try {
-                InetAddress.getAllByName(host).forEach { addr ->
-                    addr.hostAddress?.substringBefore('%')?.let { protectedIps.add(it) }
+    private fun resolveBlockedIpsParallel(): Pair<Set<String>, Set<String>> {
+        val now = System.currentTimeMillis()
+        cachedLbsIps?.let { cached ->
+            if (now - lastDnsResolveTimeMs < DNS_CACHE_TTL_MS && (cached.first.isNotEmpty() || cached.second.isNotEmpty())) {
+                return cached
+            }
+        }
+
+        val protectedFutures = PROTECTED_IM_HOSTS.map { host ->
+            dnsResolvePool.submit(Callable {
+                runCatching {
+                    InetAddress.getAllByName(host).mapNotNull { it.hostAddress?.substringBefore('%') }
+                }.getOrDefault(emptyList())
+            })
+        }
+
+        val lbsFutures = LBS_HOSTS.map { host ->
+            dnsResolvePool.submit(Callable {
+                val ips = ArrayList<String>()
+                runCatching {
+                    InetAddress.getAllByName(host).forEach { addr ->
+                        addr.hostAddress?.substringBefore('%')?.let { ips.add(it) }
+                    }
                 }
-            } catch (_: Throwable) {
+                ips.addAll(queryUdpDnsA(host, "223.5.5.5"))
+                ips.addAll(queryHttpDns(host))
+                ips
+            })
+        }
+
+        val deadline = System.currentTimeMillis() + 650L
+        val protectedIps = HashSet<String>()
+        for (f in protectedFutures) {
+            val remain = (deadline - System.currentTimeMillis()).coerceAtLeast(30L)
+            runCatching { f.get(remain, TimeUnit.MILLISECONDS) }.getOrNull()?.let {
+                protectedIps.addAll(it)
             }
         }
 
         val ipv4s = LinkedHashSet<String>()
         val ipv6s = LinkedHashSet<String>()
-        for (host in LBS_HOSTS) {
-            try {
-                InetAddress.getAllByName(host).forEach { addr ->
-                    val rawIp = addr.hostAddress?.substringBefore('%') ?: return@forEach
-                    if (rawIp in protectedIps) return@forEach
-                    when (addr) {
-                        is Inet4Address -> ipv4s.add(rawIp)
-                        is Inet6Address -> ipv6s.add(rawIp)
-                    }
+        for (f in lbsFutures) {
+            val remain = (deadline - System.currentTimeMillis()).coerceAtLeast(30L)
+            val list = runCatching { f.get(remain, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList())
+            for (rawIp in list) {
+                if (rawIp in protectedIps) continue
+                if (rawIp.contains(':')) {
+                    ipv6s.add(rawIp)
+                } else {
+                    ipv4s.add(rawIp)
                 }
-            } catch (_: Throwable) {
-            }
-            for (dns in listOf("223.5.5.5", "119.29.29.29")) {
-                queryUdpDnsA(host, dns).forEach { ip ->
-                    if (ip !in protectedIps) ipv4s.add(ip)
-                }
-            }
-            queryHttpDns(host).forEach { ip ->
-                if (ip !in protectedIps) ipv4s.add(ip)
             }
         }
 
+        val result = ipv4s to ipv6s
+        if (ipv4s.isNotEmpty() || ipv6s.isNotEmpty()) {
+            cachedLbsIps = result
+            lastDnsResolveTimeMs = System.currentTimeMillis()
+        }
+        return result
+    }
+
+    /**
+     * 单次 su 批量同步配置并更新 iptables 阻断规则，避免多次拉起 su 进程造成启动卡顿
+     */
+    fun applyRootConfigAndIptables(jsonText: String, enableBlock: Boolean): Boolean {
+        val sb = StringBuilder()
+        sb.append(buildWriteTmpConfigScript(jsonText)).append('\n')
+        appendCleanup(sb)
+        if (enableBlock) {
+            val (ipv4s, ipv6s) = resolveBlockedIpsParallel()
+            appendFilterDropRules(sb, "iptables -w", ipv4s)
+            appendFilterDropRules(sb, "ip6tables -w", ipv6s)
+        }
+        return execSu(sb.toString()).success
+    }
+
+    fun enableIptablesBlock(): Boolean {
+        val (ipv4s, ipv6s) = resolveBlockedIpsParallel()
         val sb = StringBuilder()
         appendCleanup(sb)
         appendFilterDropRules(sb, "iptables -w", ipv4s)

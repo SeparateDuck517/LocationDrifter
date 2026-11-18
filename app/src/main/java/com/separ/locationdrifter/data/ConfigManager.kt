@@ -7,9 +7,10 @@ import android.provider.Settings
 import com.separ.locationdrifter.util.RootUtils
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
 
 /**
- * 统一管理当前选点坐标、开关状态与收藏地点，同时同步到：
+ * 统一管理当前选点坐标、开关状态与收藏地点，同时异步同步到：
  * 1) Settings.Global (system_server 等系统进程零延迟实时读取)
  * 2) LSPosed MODE_WORLD_READABLE SharedPreferences
  * 3) /data/local/tmp/location_drifter.json (通过 RootUtils 串行队列落盘兜底)
@@ -35,11 +36,15 @@ object ConfigManager {
     const val KEY_FAVORITES = "favorites"
     const val KEY_UPDATED_AT = "updated_at"
 
-    // 默认坐标：北京天安门 (GCJ-02 & WGS-84)
     private const val DEFAULT_GCJ_LAT = 39.908823
     private const val DEFAULT_GCJ_LNG = 116.397470
     private const val DEFAULT_WGS_LAT = 39.907418
     private const val DEFAULT_WGS_LNG = 116.391227
+
+    private val settingsSyncExecutor = Executors.newSingleThreadExecutor()
+
+    @Volatile
+    private var cachedPrefsPair: Pair<SharedPreferences, Boolean>? = null
 
     data class DriftConfig(
         val enabled: Boolean,
@@ -67,13 +72,17 @@ object ConfigManager {
     @Suppress("DEPRECATION")
     @SuppressLint("WorldReadableFiles")
     fun getPrefsAndWorldReadableState(context: Context): Pair<SharedPreferences, Boolean> {
-        return try {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_WORLD_READABLE)
+        cachedPrefsPair?.let { return it }
+        val appCtx = context.applicationContext ?: context
+        val pair = try {
+            val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_WORLD_READABLE)
             prefs to true
         } catch (_: SecurityException) {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs to false
         }
+        cachedPrefsPair = pair
+        return pair
     }
 
     fun isWorldReadableSupported(context: Context): Boolean {
@@ -99,8 +108,10 @@ object ConfigManager {
     }
 
     fun save(context: Context, config: DriftConfig, syncTmpWithRoot: Boolean = true) {
-        val (prefs, _) = getPrefsAndWorldReadableState(context)
+        val appCtx = context.applicationContext ?: context
+        val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
         val now = System.currentTimeMillis()
+        // 使用 apply() 立即更新内存状态并异步落盘，避免主线程 fsync 卡顿
         prefs.edit()
             .putBoolean(KEY_ENABLED, config.enabled)
             .putString(KEY_WGS_LAT, config.wgsLat.toString())
@@ -114,12 +125,14 @@ object ConfigManager {
             .putBoolean(KEY_ENABLE_VPN, config.enableVpn)
             .putBoolean(KEY_JITTER, config.enableJitter)
             .putLong(KEY_UPDATED_AT, now)
-            .commit()
+            .apply()
 
         val json = toJson(config.copy(updatedAt = now)).toString()
-        try {
-            Settings.Global.putString(context.contentResolver, SETTINGS_GLOBAL_KEY, json)
-        } catch (_: Throwable) {
+        settingsSyncExecutor.execute {
+            try {
+                Settings.Global.putString(appCtx.contentResolver, SETTINGS_GLOBAL_KEY, json)
+            } catch (_: Throwable) {
+            }
         }
 
         if (syncTmpWithRoot) {
