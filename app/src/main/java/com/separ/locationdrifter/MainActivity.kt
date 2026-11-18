@@ -647,12 +647,12 @@ class MainActivity : Activity() {
                         if (isChecked) {
                             val count = ShizukuHelper.applyTargetAppLocationIsolation(this)
                             runOnUiThread {
-                                toast("已隔离 $count 个目标应用的 Wi-Fi/基站感知")
+                                toast("已隔离 $count 个目标应用扫描并重启生效")
                             }
                         } else {
                             ShizukuHelper.restoreTargetAppLocationIsolation(this)
                             runOnUiThread {
-                                toast("已恢复目标应用原始定位权限")
+                                toast("已恢复目标应用原始权限")
                             }
                         }
                     }
@@ -975,7 +975,7 @@ class MainActivity : Activity() {
                             tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                             tvDegradedTitle.text = "Shizuku 增强模式已就绪"
                             tvDegradedDesc.text =
-                                "自动放行模拟位置、关后台扫描，并临时隔离目标应用（${ShizukuHelper.getTargetAppsSummary(this)}）的 Wi-Fi/基站感知。"
+                                "自动放行模拟位置、关后台扫描，开启漂移时自动清缓存并隔离目标应用（${ShizukuHelper.getTargetAppsSummary(this)}）硬件扫描。"
                             btnDegradedAction.text = "配置隔离 ›"
                         }
                         !shizukuAutoGrantTried -> {
@@ -1040,7 +1040,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.text = "模拟定位: 已授权 ✓"
                     tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                     tvDegradedTitle.text = "纯免 Root 模式已就绪"
-                    tvDegradedDesc.text = "已启用模拟定位与网络定位阻断；建议在系统位置设置关闭 Wi-Fi/蓝牙扫描。"
+                    tvDegradedDesc.text = "建议：1.系统位置设置关闭 Wi-Fi/蓝牙扫描；2.彻底划掉目标应用后再开启漂移。"
                     btnDegradedAction.text = "防漂移指南 ›"
                 } else {
                     tvXposedStatus.text = "模拟定位: 未设置 ›"
@@ -1094,7 +1094,7 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         val tvHint = TextView(this).apply {
-            text = "开启漂移时通过 Shizuku 临时限制所选应用的 Wi-Fi 扫描、蓝牙扫描与基站/网络粗略定位权限（保留 GPS 权限，不影响聊天），停止漂移自动恢复："
+            text = "开启漂移时通过 Shizuku 临时限制所选应用的 Wi-Fi/蓝牙扫描权限、清空定位 SDK 缓存并重载进程（保留 GPS 权限，不影响聊天），停止漂移自动恢复："
             setTextColor(Color.parseColor("#475569"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setLineSpacing(dp(2).toFloat(), 1f)
@@ -1291,11 +1291,11 @@ class MainActivity : Activity() {
         val cShizuku = buildModeCard(
             WorkMode.SHIZUKU,
             "2. 免 Root + Shizuku 增强模式",
-            "免 Root 推荐 · 自动授权 + AppOps 硬件感知隔离",
+            "免 Root 推荐 · 自动授权 + 清理缓存 + 隔离扫描",
             "✓ 无需 Root，Shizuku 自动放行模拟位置\n" +
-                "✓ 临时限制目标应用（微信等）Wi-Fi/蓝牙/基站感知，停止自动还原\n" +
+                "✓ 自动限制微信等应用的 Wi-Fi/蓝牙扫描，清定位缓存并重载进程\n" +
                 "✓ 自动关闭后台扫描 + 局部 DNS 分流阻断网络定位",
-            "✗ 无法抹除系统底层 isMock 标记"
+            "✗ 无法抹除系统底层 isMock 标记（强风控应用可能拒收）"
         )
         cardRefs.add(cShizuku)
 
@@ -1305,7 +1305,7 @@ class MainActivity : Activity() {
             "零外部依赖 · 开箱即用",
             "✓ 无需 Root 与 Shizuku，系统模拟定位 + 局部 VPN\n" +
                 "✓ 仅拦截网络定位域名，正常聊天与上网畅通",
-            "✗ 需手动在开发者选项授权并关闭后台扫描"
+            "✗ 需手动授权模拟位置、关闭后台扫描并重启目标应用"
         )
         cardRefs.add(cBasic)
 
@@ -1745,7 +1745,7 @@ class MainActivity : Activity() {
                     ShizukuHelper.getTargetAppsSummary(this),
                     "#059669"
                 )
-                addStatusCheckRow(statusCard, "4. 自动关扫描", "支持 (停止自动恢复)", "#059669")
+                addStatusCheckRow(statusCard, "4. 自动关扫描 & 清缓存", "支持 (停止自动恢复)", "#059669")
                 addStatusCheckRow(statusCard, "5. 抹除底层 isMock", "不支持 (需Root+LSPosed)", "#64748B")
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1774,19 +1774,14 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "目标应用 Wi-Fi / 蓝牙 / 基站感知隔离",
-                    "开启漂移时自动通过 AppOps 限制目标应用（默认微信）读取周围 Wi-Fi、蓝牙信标与粗略基站信息，仅保留精细 GPS 通道，停止漂移自动恢复。"
+                    "目标应用扫描隔离 & 自动清缓存重载",
+                    "开启漂移时自动限制目标应用（默认微信）的 Wi-Fi/蓝牙扫描，清空腾讯定位缓存并重启目标应用以加载虚拟坐标，停止漂移自动恢复。"
                 )
                 addStepCard(
                     root,
-                    "3",
-                    if (mockAllowed) "模拟位置（已放行）" else "设置模拟位置应用",
-                    if (mockAllowed) {
-                        "已放行模拟位置，同时自动关闭系统后台 Wi-Fi/蓝牙扫描。"
-                    } else {
-                        "若系统限制自动放行，请在「开发者选项」手动选中本应用。"
-                    },
-                    highlight = hasShizukuPermission && !mockAllowed
+                    "!",
+                    "关于微信强风控校验说明",
+                    "免 Root 下系统仍会给模拟坐标打上 isMock 标记；若微信在当前系统版本严格拒收带 isMock 标记的 GPS，仅 Root + LSPosed 或虚拟沙盒容器可抹除该标记。"
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1800,14 +1795,14 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    "保持开启「系统GPS注入 + VPN阻断」",
-                    "局部 DNS 阻断网络定位接口，同时保持微信与正常上网畅通。"
+                    "开启前先关闭后台扫描并划掉目标应用",
+                    "在系统「设置 → 位置信息」关闭 Wi-Fi/蓝牙扫描，并彻底划掉微信等目标应用后再开启漂移。"
                 )
                 addStepCard(
                     root,
-                    "3",
-                    "建议关闭系统 Wi-Fi / 蓝牙扫描",
-                    "在系统「设置 → 位置信息」中关闭 Wi-Fi 扫描与蓝牙扫描可减少回弹。"
+                    "!",
+                    "免 Root 能力边界",
+                    "纯免 Root 无法隐藏 isMock 标记或基站信息，适用于高德/百度地图等普通应用；微信等强风控应用需在 Root + LSPosed 模式下使用。"
                 )
             }
             WorkMode.ROOT_LSPOSED -> {
@@ -1950,7 +1945,7 @@ class MainActivity : Activity() {
                         ShizukuHelper.applyAntiDriftScanSuppression(this)
                     }
                     val isolatedCount = if (isolateApps) {
-                        ShizukuHelper.applyTargetAppLocationIsolation(this)
+                        ShizukuHelper.applyTargetAppLocationIsolation(this, forceRestartTarget = true)
                     } else {
                         0
                     }
@@ -1961,7 +1956,7 @@ class MainActivity : Activity() {
                         launchForegroundServices(cfg)
                         refreshRunStatusUI()
                         val msg = when {
-                            isolatedCount > 0 -> "已开启（已隔离 $isolatedCount 个目标应用硬件感知）"
+                            isolatedCount > 0 -> "已开启（已隔离并重置 $isolatedCount 个目标应用）"
                             suppressScan -> "已开启（已自动关扫描）"
                             else -> "已开启定位漂移"
                         }
@@ -2469,9 +2464,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 国内主力 POI 搜索接口 1：百度地图 Web 检索 (BD-09MC -> GCJ-02)
-     */
     private fun searchViaBaiduPoi(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
         val url = "https://map.baidu.com/?newmap=1&reqflag=pcmap&biz=1&from=webmap" +
             "&da_par=direct&pcevaname=pc4.1&qt=s&da_src=searchBox.button" +
@@ -2523,9 +2515,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 国内主力 POI 联想接口 2：百度地图 Suggest (/su)
-     */
     private fun searchViaBaiduSuggest(encodedQuery: String, fallbackName: String): List<PlaceSearchResult> {
         val url = "https://map.baidu.com/su?wd=$encodedQuery&cid=1&type=0&newmap=1"
         val body = httpGetText(url, timeoutMs = 3000, referer = "https://map.baidu.com/") ?: return emptyList()
@@ -2642,11 +2631,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 多源并行竞速地理编码：
-     * 优先采用国内低延迟 POI 接口（百度检索 + 百度联想），并行竞速海外源（ArcGIS + Photon），
-     * 严格限制总等待时间 <= 4.2s，彻底杜绝海外接口超时导致界面卡死在「搜索中」。
-     */
     private fun performPlaceSearch(query: String, gen: Int) {
         searchPool.execute {
             val encoded = try {

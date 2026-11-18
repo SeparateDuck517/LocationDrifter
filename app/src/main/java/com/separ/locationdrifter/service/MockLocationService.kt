@@ -28,10 +28,9 @@ import java.util.Locale
 import kotlin.random.Random
 
 /**
- * 持续向系统 LocationManager 注入虚拟位置：
- * - 当 Root + LSPosed system_server Hook 已激活时，由 system_server 原生下发无 Mock 标记的虚拟坐标与 12 颗卫星，
- *   不再注册系统 TestProvider，彻底规避 OEM 框架对 MockLocationProvider 的风控标记；
- * - 当处于免 Root / Shizuku 模式时，自动注册 TestProvider 持续推送虚拟坐标。
+ * 持续向系统 LocationManager 注入虚拟位置（支持 Root、Shizuku 与纯免 Root 开发者选项模式）：
+ * - 免 Root / Shizuku 模式下同时向 gps / network / fused / passive 四个 Provider 注入一致的高精度坐标，
+ *   并在切换选点后立即同步刷新全部 Provider 的 lastKnownLocation 缓存，防止微信定位 SDK 回读旧缓存。
  */
 class MockLocationService : Service() {
 
@@ -42,7 +41,7 @@ class MockLocationService : Service() {
 
         private const val CHANNEL_ID = "location_drifter_channel"
         private const val NOTIFICATION_ID = 10086
-        private const val UPDATE_INTERVAL_MS = 250L
+        private const val UPDATE_INTERVAL_MS = 200L
 
         @Volatile
         var isRunning: Boolean = false
@@ -112,7 +111,10 @@ class MockLocationService : Service() {
                             if (activeProviders.isEmpty()) {
                                 setupTestProviders()
                             }
-                            pushLocationToProviders(cfg)
+                            // 连续刷新 3 帧最新坐标覆盖系统与 SDK 的 lastKnownLocation 环形缓存
+                            repeat(3) {
+                                pushLocationToProviders(cfg)
+                            }
                         }
                         updateNotification(cfg)
                     }
@@ -157,7 +159,6 @@ class MockLocationService : Service() {
 
         workerHandler?.post {
             if (RootUtils.isSystemServerHookActive(this)) {
-                // system_server Hook 已接管，不注册 TestProvider 避免留下 Mock 痕迹
                 clearTestProviders()
                 isMockingEffective = true
                 updateNotification(cfg)
@@ -171,7 +172,9 @@ class MockLocationService : Service() {
                 }
                 setupTestProviders()
                 updateNotification(cfg)
-                pushLocationToProviders(cfg)
+                repeat(3) {
+                    pushLocationToProviders(cfg)
+                }
             }
             workerHandler?.removeCallbacks(pushRunnable)
             workerHandler?.postDelayed(pushRunnable, UPDATE_INTERVAL_MS)
@@ -183,7 +186,8 @@ class MockLocationService : Service() {
         val candidates = listOf(
             LocationManager.GPS_PROVIDER,
             LocationManager.NETWORK_PROVIDER,
-            "fused"
+            "fused",
+            LocationManager.PASSIVE_PROVIDER
         )
         for (provider in candidates) {
             try {
@@ -253,7 +257,11 @@ class MockLocationService : Service() {
                     latitude = lat
                     longitude = lng
                     altitude = 36.0
-                    accuracy = if (provider == LocationManager.GPS_PROVIDER) 2.8f else 12.0f
+                    accuracy = when (provider) {
+                        LocationManager.GPS_PROVIDER -> 2.5f
+                        "fused" -> 3.0f
+                        else -> 5.0f
+                    }
                     speed = jitterSpeed
                     bearing = jitterBearing
                     time = System.currentTimeMillis()

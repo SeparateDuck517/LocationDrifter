@@ -20,7 +20,7 @@ import java.util.concurrent.Executors
  * 1) 通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION，并辅以多格式 appops 命令兜底；
  * 2) 漂移期间自动临时关闭系统后台 Wi-Fi / 蓝牙扫描减少坐标回弹，停止漂移后自动还原；
  * 3) 动态隔离目标应用（默认微信 com.tencent.mm）的 Wi-Fi 扫描与蓝牙扫描 AppOps 感知权限（保留精细与粗略 GPS 定位权限），
- *    停止漂移时按备份精确恢复原权限状态。
+ *    并自动清空目标应用腾讯定位 SDK 缓存及重载进程，迫使其立即采信系统模拟 GPS。
  */
 object ShizukuHelper {
 
@@ -50,7 +50,7 @@ object ShizukuHelper {
         TargetAppPreset("com.alibaba.android.rimet", "钉钉")
     )
 
-    // 仅隔离 Wi-Fi 与蓝牙硬件扫描，绝不禁用 coarse_location（否则会导致 SDK 判定定位权限被拒而彻底丢失 GPS 通道）
+    // 仅隔离 Wi-Fi 与蓝牙硬件扫描，保留 FINE/COARSE GPS 权限通道
     private val TARGET_ISOLATED_OPS = listOf(
         "android:wifi_scan",
         "android:bluetooth_scan"
@@ -301,9 +301,14 @@ object ShizukuHelper {
         }
     }
 
+    /**
+     * 通过 Shizuku 临时隔离目标应用（默认微信）的 Wi-Fi 与蓝牙扫描权限，
+     * 同时清理腾讯定位 SDK 缓存并强制重启目标应用进程（避免旧进程内存缓存旧真实坐标）。
+     */
     fun applyTargetAppLocationIsolation(
         context: Context,
-        packages: List<String> = getTargetApps(context)
+        packages: List<String> = getTargetApps(context),
+        forceRestartTarget: Boolean = true
     ): Int {
         if (!hasPermission() || packages.isEmpty()) return 0
         val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
@@ -335,6 +340,12 @@ object ShizukuHelper {
                     backupJson.put(key, origMode)
                 }
                 cmdBuilder.append("cmd appops set --user 0 $pkg $op ignore 2>/dev/null || appops set $pkg $op ignore 2>/dev/null || true\n")
+            }
+
+            // 清理外置存储中腾讯定位 SDK 缓存文件（tencentmapsdk / lbs），消除缓存坐标干扰
+            cmdBuilder.append("rm -rf /sdcard/Android/data/$pkg/files/tencentmapsdk /sdcard/Android/data/$pkg/cache/tencentmapsdk 2>/dev/null || true\n")
+            if (forceRestartTarget) {
+                cmdBuilder.append("am force-stop --user 0 $pkg 2>/dev/null || am force-stop $pkg 2>/dev/null || true\n")
             }
             isolatedCount++
         }
@@ -401,6 +412,7 @@ object ShizukuHelper {
         val cmd = """
             settings put global wifi_scan_always_enabled 0 2>/dev/null || cmd settings put global wifi_scan_always_enabled 0 2>/dev/null || true
             settings put global ble_scan_always_enabled 0 2>/dev/null || cmd settings put global ble_scan_always_enabled 0 2>/dev/null || true
+            cmd wifi set-scan-always-available disabled 2>/dev/null || true
         """.trimIndent()
         return execShizuku(cmd).success
     }
@@ -413,9 +425,11 @@ object ShizukuHelper {
         prefs.edit().putBoolean(KEY_HAS_BACKUP, false).apply()
 
         if (!hasPermission()) return false
+        val wifiStateWord = if (origWifi == 1) "enabled" else "disabled"
         val cmd = """
             settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || cmd settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || true
             settings put global ble_scan_always_enabled $origBle 2>/dev/null || cmd settings put global ble_scan_always_enabled $origBle 2>/dev/null || true
+            cmd wifi set-scan-always-available $wifiStateWord 2>/dev/null || true
         """.trimIndent()
         return execShizuku(cmd).success
     }
