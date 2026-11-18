@@ -31,7 +31,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 仓库未提交 gradlew，直接指定与 AGP 8.5.2 匹配的 Gradle 8.7
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -39,12 +38,15 @@ jobs:
 
       - name: Decode Signing Keystore
         id: decode_keystore
-        if: ${{ secrets.SIGNING_KEY != '' }}
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
-          echo "$SIGNING_KEY" | tr -d '\r\n ' | base64 -d > "${{ runner.temp }}/release.jks"
-          echo "keystore_path=${{ runner.temp }}/release.jks" >> "$GITHUB_OUTPUT"
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "$SIGNING_KEY" | tr -d '\r\n ' | base64 -d > "${{ runner.temp }}/release.jks"
+            echo "keystore_path=${{ runner.temp }}/release.jks" >> "$GITHUB_OUTPUT"
+          else
+            echo "SIGNING_KEY is empty, skipping keystore decode."
+          fi
 
       - name: Build APKs
         env:
