@@ -12,9 +12,9 @@
         android:background="#FFFFFF"
         android:elevation="2dp"
         android:orientation="vertical"
-        android:paddingStart="16dp"
+        android:paddingStart="14dp"
         android:paddingTop="10dp"
-        android:paddingEnd="16dp"
+        android:paddingEnd="14dp"
         android:paddingBottom="10dp">
 
         <LinearLayout
@@ -42,10 +42,27 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="1dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
                     android:text="零三方应用注入架构 · 系统级防漂移"
                     android:textColor="#64748B"
                     android:textSize="11sp" />
             </LinearLayout>
+
+            <TextView
+                android:id="@+id/btnHelpGuide"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:paddingStart="9dp"
+                android:paddingTop="5dp"
+                android:paddingEnd="9dp"
+                android:paddingBottom="5dp"
+                android:text="使用指引"
+                android:textColor="#1D4ED8"
+                android:textSize="11.5sp"
+                android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/tvRunStatus"
@@ -58,7 +75,7 @@
                 android:paddingBottom="5dp"
                 android:text="● 未开启"
                 android:textColor="#64748B"
-                android:textSize="12sp"
+                android:textSize="11.5sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
@@ -74,8 +91,12 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:background="@drawable/bg_status_pill"
+                android:ellipsize="end"
                 android:gravity="center"
+                android:maxLines="1"
+                android:paddingStart="6dp"
                 android:paddingTop="4dp"
+                android:paddingEnd="6dp"
                 android:paddingBottom="4dp"
                 android:text="Root: 检测中..."
                 android:textColor="#475569"
@@ -89,8 +110,12 @@
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_status_pill"
+                android:ellipsize="end"
                 android:gravity="center"
+                android:maxLines="1"
+                android:paddingStart="6dp"
                 android:paddingTop="4dp"
+                android:paddingEnd="6dp"
                 android:paddingBottom="4dp"
                 android:text="LSPosed: 检测中..."
                 android:textColor="#475569"
@@ -98,18 +123,20 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 降级模式/环境提醒横幅（仅在无 Root 或 LSPosed 未激活时自动展开） -->
+        <!-- 降级模式/环境提醒横幅（点击整张卡片或右侧按钮均可打开图文向导） -->
         <LinearLayout
             android:id="@+id/cardDegradedBanner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:background="@drawable/bg_warning_card"
+            android:clickable="true"
+            android:focusable="true"
             android:orientation="vertical"
             android:paddingStart="10dp"
-            android:paddingTop="7dp"
+            android:paddingTop="8dp"
             android:paddingEnd="10dp"
-            android:paddingBottom="7dp"
+            android:paddingBottom="8dp"
             android:visibility="gone">
 
             <LinearLayout
@@ -123,9 +150,9 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="当前处于「免 Root 降级兼容模式」"
+                    android:text="免 Root 降级兼容模式"
                     android:textColor="#92400E"
-                    android:textSize="11.5sp"
+                    android:textSize="12sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -135,12 +162,12 @@
                     android:layout_marginStart="6dp"
                     android:background="@drawable/bg_btn_secondary"
                     android:paddingStart="8dp"
-                    android:paddingTop="2dp"
+                    android:paddingTop="3dp"
                     android:paddingEnd="8dp"
-                    android:paddingBottom="2dp"
-                    android:text="授权指引"
+                    android:paddingBottom="3dp"
+                    android:text="配置指引 ›"
                     android:textColor="#1D4ED8"
-                    android:textSize="10.5sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
             </LinearLayout>
 
@@ -148,11 +175,11 @@
                 android:id="@+id/tvDegradedDesc"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="3dp"
-                android:lineSpacingExtra="1.5dp"
-                android:text="已自动切换为「系统模拟定位 + 局部 RST-VPN 阻断」；因无系统级 Hook，无法隐藏 isMock 标记或屏蔽周边 Wi-Fi/基站。"
+                android:layout_marginTop="4dp"
+                android:lineSpacingExtra="2dp"
+                android:text="已启用系统模拟定位 + 局部 RST-VPN 阻断。因无系统 Hook，无法隐藏 isMock 标记或底层屏蔽 Wi-Fi/基站。"
                 android:textColor="#78350F"
-                android:textSize="10.5sp" />
+                android:textSize="11sp" />
         </LinearLayout>
     </LinearLayout>
 
@@ -290,7 +317,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 2x2 策略矩阵 -->
+        <!-- 2x2 策略矩阵（单行防截断，点击锁定项自动弹出原因指引） -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -300,31 +327,37 @@
             <CheckBox
                 android:id="@+id/cbSystemMock"
                 android:layout_width="0dp"
-                android:layout_height="36dp"
+                android:layout_height="38dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_chip_toggle"
                 android:buttonTint="#2563EB"
                 android:checked="true"
-                android:paddingStart="6dp"
-                android:paddingEnd="8dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingEnd="6dp"
+                android:singleLine="true"
                 android:text="系统GPS注入"
                 android:textColor="#1E293B"
-                android:textSize="12sp" />
+                android:textSize="11.5sp" />
 
             <CheckBox
                 android:id="@+id/cbAntiDrift"
                 android:layout_width="0dp"
-                android:layout_height="36dp"
+                android:layout_height="38dp"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_chip_toggle"
                 android:buttonTint="#2563EB"
                 android:checked="true"
-                android:paddingStart="6dp"
-                android:paddingEnd="8dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingEnd="6dp"
+                android:singleLine="true"
                 android:text="防基站/WiFi漂移"
                 android:textColor="#1E293B"
-                android:textSize="12sp" />
+                android:textSize="11.5sp" />
         </LinearLayout>
 
         <LinearLayout
@@ -336,31 +369,37 @@
             <CheckBox
                 android:id="@+id/cbIptables"
                 android:layout_width="0dp"
-                android:layout_height="36dp"
+                android:layout_height="38dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_chip_toggle"
                 android:buttonTint="#2563EB"
                 android:checked="true"
-                android:paddingStart="6dp"
-                android:paddingEnd="8dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingEnd="6dp"
+                android:singleLine="true"
                 android:text="内核阻断"
                 android:textColor="#1E293B"
-                android:textSize="12sp" />
+                android:textSize="11.5sp" />
 
             <CheckBox
                 android:id="@+id/cbVpn"
                 android:layout_width="0dp"
-                android:layout_height="36dp"
+                android:layout_height="38dp"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_chip_toggle"
                 android:buttonTint="#2563EB"
                 android:checked="false"
-                android:paddingStart="6dp"
-                android:paddingEnd="8dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingEnd="6dp"
+                android:singleLine="true"
                 android:text="VPN阻断"
                 android:textColor="#1E293B"
-                android:textSize="12sp" />
+                android:textSize="11.5sp" />
         </LinearLayout>
 
         <!-- 一键启停主操作行 -->

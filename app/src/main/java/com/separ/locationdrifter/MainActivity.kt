@@ -10,11 +10,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -27,6 +32,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.separ.locationdrifter.data.ConfigManager
@@ -104,6 +110,7 @@ class MainActivity : Activity() {
     )
 
     private lateinit var tvSubtitleMode: TextView
+    private lateinit var btnHelpGuide: TextView
     private lateinit var tvRootStatus: TextView
     private lateinit var tvXposedStatus: TextView
     private lateinit var tvRunStatus: TextView
@@ -171,6 +178,7 @@ class MainActivity : Activity() {
 
     private fun initViews() {
         tvSubtitleMode = findViewById(R.id.tvSubtitleMode)
+        btnHelpGuide = findViewById(R.id.btnHelpGuide)
         tvRootStatus = findViewById(R.id.tvRootStatus)
         tvXposedStatus = findViewById(R.id.tvXposedStatus)
         tvRunStatus = findViewById(R.id.tvRunStatus)
@@ -197,25 +205,14 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnAddFavorite).setOnClickListener { showAddFavoriteDialog() }
         btnFavorites.setOnClickListener { showFavoritesDialog() }
 
-        val degradedActionClick = View.OnClickListener {
-            if (!hasRoot && rootCheckCompleted) {
-                if (RootUtils.isMockLocationAllowed(this)) {
-                    showRootlessTipsDialog()
-                } else {
-                    showRootlessMockGuideDialog()
-                }
-            } else if (hasRoot && !hasXposed) {
-                showLsposedGuideDialog()
-            }
+        val openGuideClick = View.OnClickListener {
+            showEnvironmentGuideDialog()
         }
-        btnDegradedAction.setOnClickListener(degradedActionClick)
-        tvXposedStatus.setOnClickListener {
-            if (!hasRoot && rootCheckCompleted && !RootUtils.isMockLocationAllowed(this)) {
-                showRootlessMockGuideDialog()
-            } else if (hasRoot && !hasXposed) {
-                showLsposedGuideDialog()
-            }
-        }
+        btnHelpGuide.setOnClickListener(openGuideClick)
+        cardDegradedBanner.setOnClickListener(openGuideClick)
+        btnDegradedAction.setOnClickListener(openGuideClick)
+        tvRootStatus.setOnClickListener(openGuideClick)
+        tvXposedStatus.setOnClickListener(openGuideClick)
 
         btnToggleDrift.setOnClickListener {
             if (isEnabled) {
@@ -232,6 +229,7 @@ class MainActivity : Activity() {
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     private fun bindCheckboxListeners() {
         val listener = CompoundButton.OnCheckedChangeListener { _, _ ->
             if (suppressCheckboxCallback) return@OnCheckedChangeListener
@@ -241,10 +239,25 @@ class MainActivity : Activity() {
                 ConfigManager.save(this, buildCurrentConfig(enabled = false), syncTmpWithRoot = false)
             }
         }
-        cbSystemMock.setOnCheckedChangeListener(listener)
-        cbAntiDrift.setOnCheckedChangeListener(listener)
-        cbIptables.setOnCheckedChangeListener(listener)
-        cbVpn.setOnCheckedChangeListener(listener)
+        val lockedTouchExplain = View.OnTouchListener { v, event ->
+            if (!v.isEnabled && event.action == MotionEvent.ACTION_UP) {
+                val reason = if (v.id == R.id.cbIptables) {
+                    "「内核阻断」依赖 Root 权限，免 Root 模式下请使用「VPN阻断(推荐)」替代"
+                } else {
+                    "「防基站/WiFi漂移」依赖 Root + LSPosed 系统框架注入，免 Root 模式下不可用"
+                }
+                toast(reason)
+                showEnvironmentGuideDialog()
+                true
+            } else {
+                false
+            }
+        }
+
+        for (box in listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn)) {
+            box.setOnCheckedChangeListener(listener)
+            box.setOnTouchListener(lockedTouchExplain)
+        }
     }
 
     private fun loadSavedState() {
@@ -314,9 +327,9 @@ class MainActivity : Activity() {
         if (hasRoot && hasXposed) {
             // 完整模式：Root + LSPosed
             tvSubtitleMode.text = "零三方应用注入架构 · 系统级防漂移"
-            tvRootStatus.text = "Root: 已授权"
+            tvRootStatus.text = "Root: 已授权 ✓"
             tvRootStatus.setTextColor(Color.parseColor("#059669"))
-            tvXposedStatus.text = "LSPosed: 已激活"
+            tvXposedStatus.text = "LSPosed: 已激活 ✓"
             tvXposedStatus.setTextColor(Color.parseColor("#059669"))
             cardDegradedBanner.visibility = View.GONE
 
@@ -327,48 +340,48 @@ class MainActivity : Activity() {
         } else if (hasRoot && !hasXposed) {
             // 仅 Root 模式（LSPosed 未激活）
             tvSubtitleMode.text = "Root 已就绪 · 等待 LSPosed 模块激活"
-            tvRootStatus.text = "Root: 已授权"
+            tvRootStatus.text = "Root: 已授权 ✓"
             tvRootStatus.setTextColor(Color.parseColor("#059669"))
-            tvXposedStatus.text = "LSPosed: 未激活 ↗"
+            tvXposedStatus.text = "LSPosed: 未激活 ›"
             tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
 
             cardDegradedBanner.visibility = View.VISIBLE
-            tvDegradedTitle.text = "已获取 Root，但 LSPosed 模块未激活"
+            tvDegradedTitle.text = "已获取 Root，但 LSPosed 模块尚未激活"
             tvDegradedDesc.text =
-                "当前仅可启用系统模拟定位与内核阻断，无法在系统层抹除 Mock 标记及隔离基站/Wi-Fi。请在 LSPosed 中启用本模块并勾选「系统框架」与「电话服务」后重启。"
-            btnDegradedAction.text = "激活步骤"
+                "当前仅可启用系统模拟定位与内核阻断，无法抹除 Mock 标记或底层隔离基站/Wi-Fi。点击查看激活与作用域配置步骤。"
+            btnDegradedAction.text = "激活向导 ›"
 
             setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
-            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站/WiFi(需LSPosed)")
+            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
             setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
             setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
         } else {
             // 免 Root 降级兼容模式（无 Root / 无 Shizuku）
             val mockAllowed = RootUtils.isMockLocationAllowed(this)
-            tvSubtitleMode.text = "免 Root 降级兼容模式 · 系统模拟定位 + RST-VPN"
-            tvRootStatus.text = "模式: 免Root降级兼容"
+            tvSubtitleMode.text = "免 Root 降级兼容 · 系统模拟定位 + RST-VPN"
+            tvRootStatus.text = "模式: 免Root降级 ›"
             tvRootStatus.setTextColor(Color.parseColor("#D97706"))
 
+            cardDegradedBanner.visibility = View.VISIBLE
             if (mockAllowed) {
-                tvXposedStatus.text = "模拟定位: 已授权"
+                tvXposedStatus.text = "模拟定位: 已授权 ✓"
                 tvXposedStatus.setTextColor(Color.parseColor("#059669"))
-                btnDegradedAction.text = "防漂移建议"
+                tvDegradedTitle.text = "免 Root 降级模式已就绪"
+                tvDegradedDesc.text =
+                    "已启用系统GPS + 局部RST-VPN（主动回发 TCP RST 加速回落 GPS，不拦截正常上网）。受限于无Root，无法隐藏 isMock 标记或屏蔽周边 Wi-Fi/基站。"
+                btnDegradedAction.text = "防漂移指南 ›"
             } else {
-                tvXposedStatus.text = "模拟定位: 待设置 ↗"
+                tvXposedStatus.text = "模拟定位: 未设置 ›"
                 tvXposedStatus.setTextColor(Color.parseColor("#DC2626"))
-                btnDegradedAction.text = "去授权模拟位置"
+                tvDegradedTitle.text = "⚠️ 需先完成 1 步设置：授权模拟位置应用"
+                tvDegradedDesc.text =
+                    "当前无 Root 权限，请先在系统「开发者选项 → 选择模拟位置信息应用」中选中「定位漂移助手」，返回即可开启。"
+                btnDegradedAction.text = "去授权设置 ›"
             }
 
-            cardDegradedBanner.visibility = View.VISIBLE
-            tvDegradedTitle.text = "当前处于「免 Root 降级兼容模式」"
-            tvDegradedDesc.text =
-                "• 已适配：系统模拟定位 + 局部 RST-VPN 阻断（主动回发 TCP RST 加速回落 GPS）\n" +
-                    "• 降级限制：无法隐藏 isMock 标记，无法底层屏蔽周边 Wi-Fi/基站；部分强风控 App 可能检测或漂移"
-
             setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
-            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站/WiFi(需LSPosed)")
+            setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
             setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
-            // 免 Root 模式下自动默认勾选 RST-VPN 作为网络定位防漂移替代方案
             val autoEnableVpn = if (!rootlessDefaultsApplied && !isEnabled) {
                 rootlessDefaultsApplied = true
                 true
@@ -387,12 +400,254 @@ class MainActivity : Activity() {
     ) {
         suppressCheckboxCallback = true
         box.isEnabled = enabled
-        box.alpha = if (enabled) 1.0f else 0.55f
+        box.alpha = if (enabled) 1.0f else 0.52f
         if (checked != null) {
             box.isChecked = checked
         }
         box.text = label
         suppressCheckboxCallback = false
+    }
+
+    private fun dp(value: Int): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            value.toFloat(),
+            resources.displayMetrics
+        ).toInt()
+    }
+
+    private fun createRoundedCard(bgColor: String, strokeColor: String, radiusDp: Int = 10): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radiusDp).toFloat()
+            setColor(Color.parseColor(bgColor))
+            setStroke(dp(1), Color.parseColor(strokeColor))
+        }
+    }
+
+    private fun addStatusCheckRow(
+        container: LinearLayout,
+        label: String,
+        statusText: String,
+        statusColor: String
+    ) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, dp(3))
+        }
+        val tvLabel = TextView(this).apply {
+            text = label
+            setTextColor(Color.parseColor("#334155"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tvVal = TextView(this).apply {
+            text = statusText
+            setTextColor(Color.parseColor(statusColor))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        row.addView(tvLabel)
+        row.addView(tvVal)
+        container.addView(row)
+    }
+
+    private fun addStepCard(
+        container: LinearLayout,
+        stepNum: String,
+        title: String,
+        detail: String,
+        highlight: Boolean = false
+    ) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = if (highlight) {
+                createRoundedCard("#FFFBEB", "#FDE68A", 10)
+            } else {
+                createRoundedCard("#F8FAFC", "#E2E8F0", 10)
+            }
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        val badge = TextView(this).apply {
+            text = stepNum
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            typeface = Typeface.DEFAULT_BOLD
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor(if (highlight) "#D97706" else "#2563EB"))
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply {
+                marginEnd = dp(9)
+                topMargin = dp(1)
+            }
+        }
+
+        val textCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tvTitle = TextView(this).apply {
+            text = title
+            setTextColor(Color.parseColor("#0F172A"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val tvDetail = TextView(this).apply {
+            text = detail
+            setTextColor(Color.parseColor("#475569"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setLineSpacing(dp(2).toFloat(), 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(3)
+            }
+        }
+        textCol.addView(tvTitle)
+        textCol.addView(tvDetail)
+
+        card.addView(badge)
+        card.addView(textCol)
+        container.addView(card)
+    }
+
+    /**
+     * 统一结构化环境自检与使用指引弹窗（自动适配完整模式、仅Root模式、免Root降级模式）
+     */
+    private fun showEnvironmentGuideDialog() {
+        val mockAllowed = RootUtils.isMockLocationAllowed(this)
+        val scroll = ScrollView(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(6))
+        }
+        scroll.addView(root)
+
+        // 1. 当前环境实时自检卡片
+        val statusCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = createRoundedCard("#EFF6FF", "#BFDBFE", 10)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val statusHeader = TextView(this).apply {
+            text = "当前运行环境实时自检"
+            setTextColor(Color.parseColor("#1E3A8A"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, dp(4))
+        }
+        statusCard.addView(statusHeader)
+
+        if (hasRoot && hasXposed) {
+            addStatusCheckRow(statusCard, "运行架构", "Root + LSPosed 完整模式", "#059669")
+            addStatusCheckRow(statusCard, "系统GPS & 模拟标记抹除", "已就绪 (零三方应用注入)", "#059669")
+            addStatusCheckRow(statusCard, "底层基站/Wi-Fi源头隔离", "已就绪 (Binder IPC 拦截)", "#059669")
+            addStatusCheckRow(statusCard, "内核 iptables 阻断", "已就绪", "#059669")
+        } else if (hasRoot && !hasXposed) {
+            addStatusCheckRow(statusCard, "Root 权限", "已授权", "#059669")
+            addStatusCheckRow(statusCard, "LSPosed 模块状态", "未激活 (需勾选作用域并重启)", "#D97706")
+            addStatusCheckRow(statusCard, "系统GPS & 内核阻断", "可用", "#059669")
+            addStatusCheckRow(statusCard, "Mock标记抹除 / 基站隔离", "暂不可用 (依赖 LSPosed)", "#DC2626")
+        } else {
+            addStatusCheckRow(statusCard, "运行架构", "免 Root 降级兼容模式", "#D97706")
+            addStatusCheckRow(
+                statusCard,
+                "1. 模拟位置应用授权",
+                if (mockAllowed) "已授权 ✓" else "未设置 (必须配置) ✗",
+                if (mockAllowed) "#059669" else "#DC2626"
+            )
+            addStatusCheckRow(statusCard, "2. 局部 RST-VPN 通道", "支持 (免证书秒级拒止)", "#059669")
+            addStatusCheckRow(statusCard, "3. 抹除isMock / 基站隔离", "不可用 (需Root+LSPosed)", "#64748B")
+        }
+        root.addView(statusCard)
+
+        // 2. 分步指引卡片
+        if (!hasRoot) {
+            addStepCard(
+                root,
+                "1",
+                if (mockAllowed) "模拟位置权限（已完成）" else "开启开发者选项并授权模拟位置（必做）",
+                "打开系统「设置 → 关于手机」，连续点击「版本号」7 次开启开发者选项；随后进入「开发者选项 → 选择模拟位置信息应用」，选中「定位漂移助手」。",
+                highlight = !mockAllowed
+            )
+            addStepCard(
+                root,
+                "2",
+                "保持开启「系统GPS注入 + VPN阻断(推荐)」",
+                "局部 VPN 仅对腾讯等网络定位域名建立精准路由并主动回发 TCP RST，不会接管正常上网流量，可迫使定位 SDK 快速回落至虚拟 GPS。"
+            )
+            addStepCard(
+                root,
+                "3",
+                "关键防漂移技巧：关闭系统 Wi-Fi / 蓝牙扫描",
+                "免 Root 下系统仍会通过周边 Wi-Fi 热点辅助校准位置。建议前往系统「设置 → 位置信息 → 位置服务/定位精度」，关闭「Wi-Fi 扫描」与「蓝牙扫描」，可大幅减少坐标回弹。"
+            )
+            addStepCard(
+                root,
+                "!",
+                "免 Root 模式能力边界说明",
+                "适用于普通地图、打卡及不强校验系统底层模拟标记的应用；若目标 App 强检测 Location.isMock() 或读取基站指纹，需在 Root + LSPosed 完整模式下使用。"
+            )
+        } else if (!hasXposed) {
+            addStepCard(
+                root,
+                "1",
+                "在 LSPosed 中启用本模块",
+                "打开 LSPosed 管理器 →「模块」→ 找到并开启「定位漂移助手」。",
+                highlight = true
+            )
+            addStepCard(
+                root,
+                "2",
+                "确认作用域仅勾选系统进程（零三方注入）",
+                "作用域仅需勾选「系统框架 (android)」与「电话服务 (com.android.phone)」，无需勾选任何第三方业务 App，避免触发应用检测。"
+            )
+            addStepCard(
+                root,
+                "3",
+                "重启手机或执行软重启生效",
+                "修改系统框架作用域后，重启一次设备即可解锁「防基站/WiFi漂移」与底层 Mock 标记抹除。"
+            )
+        } else {
+            addStepCard(
+                root,
+                "1",
+                "推荐策略组合",
+                "建议同时保持勾选「系统GPS注入」、「防基站/WiFi漂移」与「内核阻断」（无需再开启 VPN 阻断，避免重复拦截）。"
+            )
+            addStepCard(
+                root,
+                "2",
+                "实时改点无需重启目标应用",
+                "漂移运行期间，直接在地图重新选点或从收藏夹切换地点后点击「同步新选点」，system_server 会在 600ms 内同步下发新坐标与 10 颗虚拟卫星。"
+            )
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle(if (hasRoot && hasXposed) "完整模式使用说明" else "环境自检与配置向导")
+            .setView(scroll)
+            .setNegativeButton("知道了", null)
+
+        if (!hasRoot) {
+            builder.setPositiveButton("打开开发者选项") { _, _ ->
+                openDeveloperOptions()
+            }
+            builder.setNeutralButton("系统位置设置") { _, _ ->
+                openLocationSourceSettings()
+            }
+        }
+        builder.show()
     }
 
     private fun openDeveloperOptions() {
@@ -401,59 +656,19 @@ class MainActivity : Activity() {
         } catch (_: Throwable) {
             try {
                 startActivity(Intent(Settings.ACTION_SETTINGS))
-                toast("请进入「关于手机」连续点击版本号开启开发者选项")
+                toast("请进入「关于手机」连续点击版本号 7 次开启开发者选项")
             } catch (_: Throwable) {
                 toast("无法自动跳转设置页，请手动打开系统设置")
             }
         }
     }
 
-    private fun showRootlessMockGuideDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("免 Root 模式需先授权模拟位置")
-            .setMessage(
-                "当前设备无 Root 权限，需在系统开发者选项中授权一次：\n\n" +
-                    "1. 若未开启「开发者选项」，请先打开系统「设置 → 关于手机」，连续点击「版本号」7 次。\n" +
-                    "2. 进入「设置 → 系统/其他设置 → 开发者选项」。\n" +
-                    "3. 找到「选择模拟位置信息应用」，选择「定位漂移助手」。\n" +
-                    "4. 返回本页面后，顶部状态变为「模拟定位: 已授权」即可一键开启。"
-            )
-            .setPositiveButton("前往开发者选项") { _, _ ->
-                openDeveloperOptions()
-            }
-            .setNegativeButton("稍后设置", null)
-            .show()
-    }
-
-    private fun showRootlessTipsDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("免 Root 降级模式优化建议")
-            .setMessage(
-                "你已完成模拟位置授权，当前模式工作机制与优化建议如下：\n\n" +
-                    "1. 建议保持勾选「系统GPS注入」与「VPN阻断(推荐)」：局部 VPN 仅拦截腾讯等网络定位域名并立即回发 TCP RST，不影响正常上网，可迫使定位 SDK 快速回落至虚拟 GPS。\n" +
-                    "2. 减少室内Wi-Fi漂移技巧：前往系统「设置 → 位置信息 → 位置服务（或定位精度）」，关闭「Wi-Fi 扫描」与「蓝牙扫描」，可显著减少免 Root 下的基站/Wi-Fi 辅助定位拉回。\n" +
-                    "3. 若目标 App 仍提示检测到模拟位置或出现漂移，则说明该应用强校验系统底层 isMock 标记或基站指纹，需在 Root + LSPosed 完整模式下使用。"
-            )
-            .setPositiveButton("打开系统位置设置") { _, _ ->
-                try {
-                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                } catch (_: Throwable) {
-                }
-            }
-            .setNegativeButton("知道了", null)
-            .show()
-    }
-
-    private fun showLsposedGuideDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("LSPosed 完整模式激活说明")
-            .setMessage(
-                "1. 打开 LSPosed 管理器 →「模块」→ 启用「定位漂移助手」。\n" +
-                    "2. 确保作用域已勾选「系统框架 (android)」与「电话服务 (com.android.phone)」，无需勾选任何第三方应用。\n" +
-                    "3. 重启一次手机（或执行软重启）使系统服务层 Hook 生效。"
-            )
-            .setPositiveButton("知道了", null)
-            .show()
+    private fun openLocationSourceSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+        } catch (_: Throwable) {
+            toast("请手动打开系统「设置 → 位置信息」")
+        }
     }
 
     private fun refreshFavoritesCount() {
@@ -480,9 +695,9 @@ class MainActivity : Activity() {
     }
 
     private fun startDrifting() {
-        // 免 Root 降级模式下启动前先校验系统模拟位置授权，避免静默失效
         if (!hasRoot && cbSystemMock.isChecked && !RootUtils.isMockLocationAllowed(this)) {
-            showRootlessMockGuideDialog()
+            toast("请先在开发者选项中授权模拟位置应用")
+            showEnvironmentGuideDialog()
             return
         }
         if (!cbSystemMock.isChecked && !cbVpn.isChecked && !cbIptables.isChecked && !cbAntiDrift.isChecked) {
@@ -515,7 +730,7 @@ class MainActivity : Activity() {
         } else {
             launchForegroundServices(cfg)
             refreshRunStatusUI()
-            toast("已开启定位漂移（免 Root 降级模式）")
+            toast("已开启免 Root 降级漂移（如遇回弹可点右上角「使用指引」）")
         }
     }
 
@@ -530,7 +745,8 @@ class MainActivity : Activity() {
 
     private fun applyUpdatedCoordinates(showToast: Boolean = true) {
         if (!hasRoot && cbSystemMock.isChecked && !RootUtils.isMockLocationAllowed(this)) {
-            showRootlessMockGuideDialog()
+            toast("请先在开发者选项中授权模拟位置应用")
+            showEnvironmentGuideDialog()
             return
         }
 
