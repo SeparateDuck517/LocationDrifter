@@ -14,6 +14,7 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
+import android.location.LocationManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -70,7 +71,9 @@ class MainActivity : Activity() {
         private const val KEY_SELECTED_WORK_MODE = "selected_work_mode"
         private const val KEY_SKIP_STARTUP_MODE_DIALOG = "skip_startup_mode_dialog"
         private const val KEY_SHIZUKU_AUTO_SUPPRESS_SCAN = "shizuku_auto_suppress_scan"
+        private const val KEY_SHIZUKU_ISOLATE_TARGET_APPS = "shizuku_isolate_target_apps"
         private const val KEY_VPN_DEFAULT_MIGRATED_V2 = "vpn_default_migrated_v2"
+        private const val PROBE_PROVIDER = "location_drifter_probe"
         private val searchExecutor = Executors.newSingleThreadExecutor()
 
         private val BUILTIN_CITIES_GCJ02 = listOf(
@@ -184,6 +187,7 @@ class MainActivity : Activity() {
     private var startupDialogShown = false
     private var selectedMode: WorkMode = WorkMode.ROOTLESS_BASIC
     private var shizukuAutoSuppressScan = true
+    private var shizukuIsolateTargetApps = true
     private var isEnabled = false
     private var suppressCheckboxCallback = false
     private var isImeVisible = false
@@ -356,7 +360,7 @@ class MainActivity : Activity() {
             }
             if (ShizukuHelper.hasPermission()) {
                 ShizukuHelper.runShizukuTask {
-                    ShizukuHelper.restoreAntiDriftScanSuppression(this)
+                    ShizukuHelper.restoreAllAntiDriftStates(this)
                 }
             }
         }
@@ -600,13 +604,35 @@ class MainActivity : Activity() {
                     .putBoolean(KEY_SHIZUKU_AUTO_SUPPRESS_SCAN, isChecked)
                     .apply()
                 if (isEnabled) {
-                    if (isChecked) {
-                        ShizukuHelper.runShizukuTask {
+                    ShizukuHelper.runShizukuTask {
+                        if (isChecked) {
                             ShizukuHelper.applyAntiDriftScanSuppression(this)
-                        }
-                    } else {
-                        ShizukuHelper.runShizukuTask {
+                        } else {
                             ShizukuHelper.restoreAntiDriftScanSuppression(this)
+                        }
+                    }
+                }
+                return@OnCheckedChangeListener
+            }
+
+            if (selectedMode == WorkMode.SHIZUKU && buttonView.id == R.id.cbAntiDrift) {
+                shizukuIsolateTargetApps = isChecked
+                getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, isChecked)
+                    .apply()
+                if (isEnabled) {
+                    ShizukuHelper.runShizukuTask {
+                        if (isChecked) {
+                            val count = ShizukuHelper.applyTargetAppLocationIsolation(this)
+                            runOnUiThread {
+                                toast("已隔离 $count 个目标应用的 Wi-Fi/基站感知")
+                            }
+                        } else {
+                            ShizukuHelper.restoreTargetAppLocationIsolation(this)
+                            runOnUiThread {
+                                toast("已恢复目标应用原始定位权限")
+                            }
                         }
                     }
                 }
@@ -627,7 +653,7 @@ class MainActivity : Activity() {
                     selectedMode == WorkMode.ROOT_LSPOSED && hasXposed && !hasSystemHookActive ->
                         "LSPosed 已激活，重启手机后可用"
                     else ->
-                        "仅「Root + LSPosed 模式」支持，点击顶部「切换模式」查看"
+                        "仅「Root + LSPosed 模式」或「Shizuku 模式」支持，点击顶部「切换模式」查看"
                 }
                 toast(reason)
                 if (selectedMode == WorkMode.ROOT_LSPOSED && hasXposed && !hasSystemHookActive) {
@@ -653,6 +679,7 @@ class MainActivity : Activity() {
             selectedMode = it
         }
         shizukuAutoSuppressScan = uiPrefs.getBoolean(KEY_SHIZUKU_AUTO_SUPPRESS_SCAN, true)
+        shizukuIsolateTargetApps = uiPrefs.getBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, true)
 
         suppressCheckboxCallback = true
         val cfg = ConfigManager.load(this)
@@ -711,7 +738,12 @@ class MainActivity : Activity() {
             }
             WorkMode.SHIZUKU -> {
                 setCheckboxState(cbSystemMock, enabled = true, checked = true, label = "系统GPS注入")
-                setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
+                setCheckboxState(
+                    cbAntiDrift,
+                    enabled = true,
+                    checked = shizukuIsolateTargetApps,
+                    label = "隔离微信WiFi/基站"
+                )
                 setCheckboxState(
                     cbIptables,
                     enabled = true,
@@ -759,7 +791,7 @@ class MainActivity : Activity() {
                 ShizukuHelper.grantMockAndLocationPermissions(this)
                 shizukuAutoGrantTried = true
                 if (!isEnabled) {
-                    ShizukuHelper.restoreAntiDriftScanSuppression(this)
+                    ShizukuHelper.restoreAllAntiDriftStates(this)
                 }
             }
             runOnUiThread {
@@ -790,18 +822,38 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 通过 LocationManagerService 实时探针 + Settings.Global 双重核验 system_server 是否已加载本模块 Hook，
+     * 彻底解决重启后因 BOOT_COUNT == 0 或 SettingsProvider 启动时序导致的误报「待重启」问题。
+     */
     private fun isSystemHookReadyThisBoot(): Boolean {
         if (!ModuleStatus.isModuleActive()) return false
+
+        // 1. 首选：直接向 system_server 的 LocationManagerService 发送实时探针
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            if (lm != null) {
+                if (lm.isProviderEnabled(PROBE_PROVIDER)) {
+                    return true
+                }
+                if (lm.sendExtraCommand(PROBE_PROVIDER, "ping", Bundle())) {
+                    return true
+                }
+            }
+        } catch (_: Throwable) {
+        }
+
+        // 2. 次选：校验 Settings.Global 记录的 BOOT_COUNT（兼容 BOOT_COUNT == 0）
         return try {
-            val currentBoot = Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, -1)
+            val currentBoot = Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, 0)
             val hookedBoot = Settings.Global.getInt(
                 contentResolver,
                 ConfigManager.SETTINGS_GLOBAL_HOOKED_BOOT_KEY,
                 -2
             )
-            currentBoot > 0 && hookedBoot == currentBoot
+            currentBoot >= 0 && hookedBoot == currentBoot
         } catch (_: Throwable) {
-            true
+            false
         }
     }
 
@@ -856,7 +908,7 @@ class MainActivity : Activity() {
 
                     cardDegradedBanner.visibility = if (isImeVisible) View.GONE else View.VISIBLE
                     tvDegradedTitle.text = "LSPosed 已开启，重启手机后正式生效"
-                    tvDegradedDesc.text = "重启后可解锁防基站/Wi-Fi与抹除模拟位置标记。"
+                    tvDegradedDesc.text = "请确认 LSPosed 已勾选「系统框架」与「电话服务」，重启后解锁。"
                     btnDegradedAction.text = "立即重启 ›"
 
                     setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
@@ -907,8 +959,9 @@ class MainActivity : Activity() {
                             tvXposedStatus.text = "Shizuku: 已就绪 ✓"
                             tvXposedStatus.setTextColor(Color.parseColor("#059669"))
                             tvDegradedTitle.text = "Shizuku 增强模式已就绪"
-                            tvDegradedDesc.text = "自动放行模拟位置、关闭后台扫描，并阻断网络定位接口。"
-                            btnDegradedAction.text = "模式对比 ›"
+                            tvDegradedDesc.text =
+                                "自动放行模拟位置、关后台扫描，并临时隔离目标应用（${ShizukuHelper.getTargetAppsSummary(this)}）的 Wi-Fi/基站感知。"
+                            btnDegradedAction.text = "配置隔离 ›"
                         }
                         !shizukuAutoGrantTried -> {
                             tvXposedStatus.text = "Shizuku: 配置中..."
@@ -930,7 +983,7 @@ class MainActivity : Activity() {
                     tvXposedStatus.text = "Shizuku: 待授权 ›"
                     tvXposedStatus.setTextColor(Color.parseColor("#D97706"))
                     tvDegradedTitle.text = "Shizuku 运行中，请授予权限"
-                    tvDegradedDesc.text = "点击右侧「立即授权」即可自动放行模拟位置与防扫描。"
+                    tvDegradedDesc.text = "点击右侧「立即授权」即可自动放行模拟位置与目标应用硬件隔离。"
                     btnDegradedAction.text = "立即授权 ›"
                 } else {
                     val installed = ShizukuHelper.isShizukuInstalled(this)
@@ -946,7 +999,12 @@ class MainActivity : Activity() {
                 }
 
                 setCheckboxState(cbSystemMock, enabled = true, label = "系统GPS注入")
-                setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
+                setCheckboxState(
+                    cbAntiDrift,
+                    enabled = true,
+                    checked = shizukuIsolateTargetApps,
+                    label = "隔离微信WiFi/基站"
+                )
                 setCheckboxState(
                     cbIptables,
                     enabled = true,
@@ -1009,6 +1067,93 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    /**
+     * 方案二：配置 Shizuku AppOps 硬件定位感知隔离的目标应用弹窗（默认微信）
+     */
+    private fun showTargetAppsConfigDialog() {
+        val currentList = ShizukuHelper.getTargetApps(this).toMutableList()
+        val scroll = ScrollView(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(6))
+        }
+        scroll.addView(root)
+
+        val tvHint = TextView(this).apply {
+            text = "开启漂移时通过 Shizuku 临时限制所选应用的 Wi-Fi 扫描、蓝牙扫描与基站/网络粗略定位权限（保留 GPS 权限，不影响聊天），停止漂移自动恢复："
+            setTextColor(Color.parseColor("#475569"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setPadding(0, 0, 0, dp(8))
+        }
+        root.addView(tvHint)
+
+        val presetCheckboxes = ArrayList<Pair<String, CheckBox>>()
+        for (preset in ShizukuHelper.PRESET_TARGET_APPS) {
+            val cb = CheckBox(this).apply {
+                text = "${preset.displayName} (${preset.packageName})"
+                isChecked = preset.packageName in currentList
+                setTextColor(Color.parseColor("#0F172A"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                buttonTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#2563EB"))
+            }
+            root.addView(cb)
+            presetCheckboxes.add(preset.packageName to cb)
+        }
+
+        val customPackages = currentList.filter { pkg ->
+            ShizukuHelper.PRESET_TARGET_APPS.none { it.packageName == pkg }
+        }
+
+        val tvCustomLabel = TextView(this).apply {
+            text = "附加自定义应用包名（多个可用逗号分隔）："
+            setTextColor(Color.parseColor("#334155"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(0, dp(10), 0, dp(4))
+        }
+        root.addView(tvCustomLabel)
+
+        val etCustom = EditText(this).apply {
+            hint = "如 com.autonavi.minimap"
+            setText(customPackages.joinToString(", "))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        }
+        root.addView(etCustom)
+
+        AlertDialog.Builder(this)
+            .setTitle("配置硬件定位感知隔离应用")
+            .setView(scroll)
+            .setPositiveButton("保存") { _, _ ->
+                val result = LinkedHashSet<String>()
+                for ((pkg, box) in presetCheckboxes) {
+                    if (box.isChecked) result.add(pkg)
+                }
+                etCustom.text.toString()
+                    .split(Regex("[,，\\s]+"))
+                    .map { it.trim() }
+                    .filter { it.contains(".") }
+                    .forEach { result.add(it) }
+
+                val finalList = result.toList()
+                ShizukuHelper.setTargetApps(this, finalList)
+                updateEnvironmentUI()
+
+                if (isEnabled && selectedMode == WorkMode.SHIZUKU && shizukuIsolateTargetApps) {
+                    ShizukuHelper.runShizukuTask {
+                        ShizukuHelper.restoreTargetAppLocationIsolation(this)
+                        val count = ShizukuHelper.applyTargetAppLocationIsolation(this, finalList)
+                        runOnUiThread {
+                            toast("已更新并隔离 $count 个目标应用")
+                        }
+                    }
+                } else {
+                    toast("已保存隔离目标配置")
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun showModeSelectionDialog(isAutoStartup: Boolean) {
@@ -1134,11 +1279,11 @@ class MainActivity : Activity() {
         val cShizuku = buildModeCard(
             WorkMode.SHIZUKU,
             "2. 免 Root + Shizuku 增强模式",
-            "免 Root 推荐 · 自动授权 + 防扫描",
+            "免 Root 推荐 · 自动授权 + AppOps 硬件感知隔离",
             "✓ 无需 Root，Shizuku 自动放行模拟位置\n" +
-                "✓ 漂移时自动关闭后台 Wi-Fi/蓝牙扫描防回弹\n" +
-                "✓ 局部 DNS 分流 + RST-VPN 阻断网络定位",
-            "✗ 无法抹除 isMock 标记或隔离蜂窝基站"
+                "✓ 临时限制目标应用（微信等）Wi-Fi/蓝牙/基站感知，停止自动还原\n" +
+                "✓ 自动关闭后台扫描 + 局部 DNS 分流阻断网络定位",
+            "✗ 无法抹除系统底层 isMock 标记"
         )
         cardRefs.add(cShizuku)
 
@@ -1582,9 +1727,14 @@ class MainActivity : Activity() {
                     },
                     if (mockAllowed) "#059669" else "#DC2626"
                 )
-                addStatusCheckRow(statusCard, "3. 自动关扫描", "支持 (停止自动恢复)", "#059669")
-                addStatusCheckRow(statusCard, "4. 局部 DNS 阻断", "已就绪 (不拦截正常聊天)", "#059669")
-                addStatusCheckRow(statusCard, "5. 抹除isMock / 基站", "不支持 (需Root+LSPosed)", "#64748B")
+                addStatusCheckRow(
+                    statusCard,
+                    "3. 目标应用硬件隔离",
+                    ShizukuHelper.getTargetAppsSummary(this),
+                    "#059669"
+                )
+                addStatusCheckRow(statusCard, "4. 自动关扫描", "支持 (停止自动恢复)", "#059669")
+                addStatusCheckRow(statusCard, "5. 抹除底层 isMock", "不支持 (需Root+LSPosed)", "#64748B")
             }
             WorkMode.ROOTLESS_BASIC -> {
                 addStatusCheckRow(statusCard, "当前模式", "纯免 Root 基础版", "#D97706")
@@ -1612,19 +1762,19 @@ class MainActivity : Activity() {
                 addStepCard(
                     root,
                     "2",
-                    if (mockAllowed) "模拟位置（已放行）" else "设置模拟位置应用",
-                    if (mockAllowed) {
-                        "已放行模拟位置，开启漂移时将自动关闭 Wi-Fi/蓝牙扫描防回弹。"
-                    } else {
-                        "若系统限制自动放行，请点击下方「打开开发者选项」手动选中本应用。"
-                    },
-                    highlight = hasShizukuPermission && !mockAllowed
+                    "目标应用 Wi-Fi / 蓝牙 / 基站感知隔离",
+                    "开启漂移时自动通过 AppOps 限制目标应用（默认微信）读取周围 Wi-Fi、蓝牙信标与粗略基站信息，仅保留精细 GPS 通道，停止漂移自动恢复。"
                 )
                 addStepCard(
                     root,
                     "3",
-                    "保持开启「VPN阻断(推荐)」",
-                    "仅拦截网络定位接口域名并放行微信聊天通道，促使其回落虚拟 GPS。"
+                    if (mockAllowed) "模拟位置（已放行）" else "设置模拟位置应用",
+                    if (mockAllowed) {
+                        "已放行模拟位置，同时自动关闭系统后台 Wi-Fi/蓝牙扫描。"
+                    } else {
+                        "若系统限制自动放行，请在「开发者选项」手动选中本应用。"
+                    },
+                    highlight = hasShizukuPermission && !mockAllowed
                 )
             }
             WorkMode.ROOTLESS_BASIC -> {
@@ -1701,6 +1851,11 @@ class MainActivity : Activity() {
                     openDeveloperOptions()
                 }
             }
+            selectedMode == WorkMode.SHIZUKU -> {
+                builder.setPositiveButton("配置隔离目标") { _, _ ->
+                    showTargetAppsConfigDialog()
+                }
+            }
             selectedMode == WorkMode.ROOTLESS_BASIC -> {
                 builder.setPositiveButton("打开开发者选项") { _, _ ->
                     openDeveloperOptions()
@@ -1766,6 +1921,7 @@ class MainActivity : Activity() {
                 }
                 val cfg = buildCurrentConfig(enabled = true)
                 val suppressScan = shizukuAutoSuppressScan
+                val isolateApps = shizukuIsolateTargetApps
 
                 ShizukuHelper.runShizukuTask {
                     val mockOk = ShizukuHelper.grantMockAndLocationPermissions(this)
@@ -1781,13 +1937,23 @@ class MainActivity : Activity() {
                     if (suppressScan) {
                         ShizukuHelper.applyAntiDriftScanSuppression(this)
                     }
+                    val isolatedCount = if (isolateApps) {
+                        ShizukuHelper.applyTargetAppLocationIsolation(this)
+                    } else {
+                        0
+                    }
                     runOnUiThread {
                         isEnabled = true
                         ConfigManager.save(this, cfg, syncTmpWithRoot = false)
                         updateEnvironmentUI()
                         launchForegroundServices(cfg)
                         refreshRunStatusUI()
-                        toast(if (suppressScan) "已开启（已自动关扫描）" else "已开启定位漂移")
+                        val msg = when {
+                            isolatedCount > 0 -> "已开启（已隔离 $isolatedCount 个目标应用硬件感知）"
+                            suppressScan -> "已开启（已自动关扫描）"
+                            else -> "已开启定位漂移"
+                        }
+                        toast(msg)
                     }
                 }
             }
@@ -1924,7 +2090,7 @@ class MainActivity : Activity() {
             }
         }
         ShizukuHelper.runShizukuTask {
-            ShizukuHelper.restoreAntiDriftScanSuppression(this)
+            ShizukuHelper.restoreAllAntiDriftStates(this)
         }
 
         refreshRunStatusUI()

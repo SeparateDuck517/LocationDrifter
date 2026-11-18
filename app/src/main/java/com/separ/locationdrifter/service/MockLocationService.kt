@@ -28,7 +28,7 @@ import java.util.Locale
 import kotlin.random.Random
 
 /**
- * 持续向系统 LocationManager 注入虚拟位置（支持 Root、Shizuku 免 Root 自动授权及手动开发者选项授权模式）
+ * 持续向系统 LocationManager 注入虚拟位置（模拟外接硬件 GNSS 接收器特征，支持 Root、Shizuku 与开发者选项模式）
  */
 class MockLocationService : Service() {
 
@@ -81,6 +81,9 @@ class MockLocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                ShizukuHelper.runShizukuTask {
+                    ShizukuHelper.restoreAllAntiDriftStates(this)
+                }
                 stopMocking()
                 stopSelf()
                 return START_NOT_STICKY
@@ -110,7 +113,6 @@ class MockLocationService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // 清除后台任务时自动复位漂移状态并停止服务
         try {
             val cfg = ConfigManager.load(this)
             if (cfg.enabled) {
@@ -119,7 +121,7 @@ class MockLocationService : Service() {
         } catch (_: Throwable) {
         }
         ShizukuHelper.runShizukuTask {
-            ShizukuHelper.restoreAntiDriftScanSuppression(this)
+            ShizukuHelper.restoreAllAntiDriftStates(this)
         }
         stopMocking()
         stopSelf()
@@ -218,20 +220,23 @@ class MockLocationService : Service() {
                     latitude = lat
                     longitude = lng
                     altitude = 36.0
-                    accuracy = if (provider == LocationManager.GPS_PROVIDER) 3.0f else 12.0f
+                    accuracy = if (provider == LocationManager.GPS_PROVIDER) 2.8f else 12.0f
                     speed = jitterSpeed
                     bearing = jitterBearing
                     time = System.currentTimeMillis()
                     elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        bearingAccuracyDegrees = 1.5f
-                        speedAccuracyMetersPerSecond = 0.2f
-                        verticalAccuracyMeters = 2.0f
+                        bearingAccuracyDegrees = 1.2f
+                        speedAccuracyMetersPerSecond = 0.15f
+                        verticalAccuracyMeters = 1.8f
                     }
                     extras = Bundle().apply {
-                        putInt("satellites", 12)
-                        putInt("maxCn0", 42)
-                        putInt("meanCn0", 35)
+                        putInt("satellites", 14)
+                        putInt("maxCn0", 44)
+                        putInt("meanCn0", 36)
+                        putFloat("hdop", 0.8f)
+                        putFloat("vdop", 1.1f)
+                        putFloat("pdop", 1.3f)
                     }
                 }
                 locationManager.setTestProviderLocation(provider, loc)

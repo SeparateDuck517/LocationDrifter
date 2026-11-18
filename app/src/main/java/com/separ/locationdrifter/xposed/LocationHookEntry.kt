@@ -33,20 +33,14 @@ import kotlin.random.Random
 
 /**
  * LSPosed / Xposed 入口（严格遵守「零三方应用注入」架构）：
- * 作用域仅限系统框架 (android) 与电话服务 (com.android.phone)，绝不向任何第三方业务应用注入 Hook 代码：
- * 1) 在 system_server 挂钩 LocationManagerService / LocationProviderManager / GnssManagerService / LocationResult / Location：
- *    - 主动响应 getLastLocation / getCurrentLocation / registerLocationListener / registerGnssStatusCallback，
- *      即使室内无真实卫星信号也毫秒级下发带 10 颗有效卫星的 WGS-84 坐标，并在 Parcel 层彻底抹除 Mock 标记。
- *    - 采用时间步长一致性微抖动 (Coherent Time-Stepped Jitter)，保证同一时间窗口内多次调用 getLatitude/getLongitude 幂等一致。
- * 2) 在 Binder IPC 源头彻底隔离 Wi-Fi 与蜂窝基站（含 Android 10+ ServiceState -> NetworkRegistrationInfo.mCellIdentity）：
- *    - 使第三方定位 SDK 无法获取任何真实基站 CID/TAC 或周边 Wi-Fi BSSID 指纹，
- *      迫使其采信系统层下发的虚拟 GPS 坐标并通过在线逆地理编码正常解析位置地址。
+ * 作用域仅限系统框架 (android) 与电话服务 (com.android.phone)，绝不向任何第三方业务应用注入 Hook 代码。
  */
 class LocationHookEntry : IXposedHookLoadPackage {
 
     companion object {
         private const val TAG = "[LocationDrifter]"
         private const val MODULE_PACKAGE = "com.separ.locationdrifter"
+        private const val PROBE_PROVIDER = "location_drifter_probe"
         private const val CACHE_TTL_MS = 600L
         private const val JITTER_STEP_MS = 1000L
         private const val FIRST_APPLICATION_UID = 10000
@@ -140,18 +134,18 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
 
     /**
-     * 在 system_server 启动并加载本模块后，将当前 BOOT_COUNT 写入 Settings.Global，
-     * 供前端精准区分「刚开启 LSPosed 开关但尚未重启」与「已重启且 system_server Hook 生效」两种状态。
+     * 在 system_server 启动并加载本模块后，将当前 BOOT_COUNT 写入 Settings.Global（兼容 BOOT_COUNT == 0），
+     * 同时配合 LocationManagerService 实时探针供前端精准检测 system_server Hook 状态。
      */
     private fun markSystemServerHookedAsync() {
         Thread {
-            for (attempt in 0 until 30) {
+            for (attempt in 0 until 45) {
                 try {
                     val ctx = resolveContext()
                     if (ctx != null) {
                         val cr = ctx.contentResolver
-                        val bootCount = Settings.Global.getInt(cr, Settings.Global.BOOT_COUNT, -1)
-                        if (bootCount > 0) {
+                        val bootCount = Settings.Global.getInt(cr, Settings.Global.BOOT_COUNT, 0)
+                        if (bootCount >= 0) {
                             Settings.Global.putInt(cr, ConfigManager.SETTINGS_GLOBAL_HOOKED_BOOT_KEY, bootCount)
                             XposedBridge.log("$TAG system_server hook ready for boot_count=$bootCount")
                             return@Thread
@@ -200,9 +194,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         return sysCtx
     }
 
-    /**
-     * 判断当前 Binder 调用方是否需要隔离环境指纹（跳过系统自身、SystemUI、设置页与本模块自身）
-     */
     private fun shouldIsolateCaller(allowSameProcessBroadcast: Boolean = false): Boolean {
         val callingPid = Binder.getCallingPid()
         if (callingPid == Process.myPid()) {
@@ -223,9 +214,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         return !bypass
     }
 
-    /**
-     * 判断当前定位请求调用方是否需要注入虚拟位置（跳过模块自身进程，避免模块自检干扰）
-     */
     private fun shouldSpoofLocationCaller(): Boolean {
         val callingPid = Binder.getCallingPid()
         if (callingPid == Process.myPid()) return true
@@ -273,7 +261,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
             }
             lastLoadTimeMs = nowInside
 
-            // 1. 首选 Settings.Global（system_server 与 com.android.phone 均可零延迟读取，无 SELinux 限制）
             try {
                 val ctx = resolveContext()
                 if (ctx != null) {
@@ -291,7 +278,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
             } catch (_: Throwable) {
             }
 
-            // 2. 次选 LSPosed New XSharedPreferences
             try {
                 if (xPrefs == null) {
                     xPrefs = XSharedPreferences(MODULE_PACKAGE, ConfigManager.PREFS_NAME)
@@ -317,7 +303,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
                 xPrefs = null
             }
 
-            // 3. 兜底读取 /data/local/tmp/location_drifter.json
             try {
                 val file = File(ConfigManager.TMP_CONFIG_PATH)
                 if (file.exists() && file.canRead()) {
@@ -333,9 +318,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 按固定时间窗口 (1000ms) 更新一次微抖动偏移，保证同一窗口内多次调用 getLatitude/getLongitude 数值幂等一致
-     */
     private fun refreshCoherentJitterIfNeeded() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastJitterTimeMs >= JITTER_STEP_MS) {
@@ -500,9 +482,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 拦截 Android 12+ LocationResult 批量位置容器，确保所有经由 LocationProviderManager 发出的坐标均被覆写并抹除 Mock 标记
-     */
     private fun hookLocationResult(classLoader: ClassLoader) {
         try {
             val lrCls = XposedHelpers.findClassIfExists("android.location.LocationResult", classLoader)
@@ -561,12 +540,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 在 system_server 内部直接挂钩 LocationManagerService 与 LocationProviderManager：
-     * 1) getLastLocation 为 null 时直接合成虚拟 Location 返回
-     * 2) getCurrentLocation / registerLocationListener 时立即通过 Binder 回调推送首帧虚拟 Location
-     * 3) isProviderEnabledForUser / isLocationEnabledForUser 始终返回 true
-     */
     private fun hookSystemLocationServices(classLoader: ClassLoader) {
         val serviceClassNames = listOf(
             "com.android.server.location.LocationManagerService",
@@ -681,17 +654,43 @@ class LocationHookEntry : IXposedHookLoadPackage {
                     }
                 )
 
+                // 实时 system_server 存活探针 + Provider 可用性兜底
                 XposedBridge.hookAllMethods(
                     cls,
                     "isProviderEnabledForUser",
                     object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (!getConfig().enabled) return
+                        override fun beforeHookedMethod(param: MethodHookParam) {
                             val provider = param.args.firstOrNull() as? String ?: return
+                            if (provider == PROBE_PROVIDER) {
+                                param.result = true
+                            }
+                        }
+
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            val provider = param.args.firstOrNull() as? String ?: return
+                            if (provider == PROBE_PROVIDER) {
+                                param.result = true
+                                return
+                            }
+                            if (!getConfig().enabled) return
                             if (provider == LocationManager.GPS_PROVIDER ||
                                 provider == LocationManager.NETWORK_PROVIDER ||
                                 provider == "fused"
                             ) {
+                                param.result = true
+                            }
+                        }
+                    }
+                )
+
+                XposedBridge.hookAllMethods(
+                    cls,
+                    "sendExtraCommand",
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            val provider = param.args.firstOrNull() as? String ?: return
+                            val command = param.args.getOrNull(1) as? String ?: return
+                            if (provider == PROBE_PROVIDER && command == "ping") {
                                 param.result = true
                             }
                         }
@@ -715,10 +714,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 在 system_server 挂钩 GnssManagerService / GnssStatusProvider：
-     * 当定位 SDK 注册 IGnssStatusListener 检测卫星状态时，立即下发 onGnssStarted + onFirstFix + 10 颗工作卫星
-     */
     private fun hookGnssManagerService(classLoader: ClassLoader) {
         val gnssClasses = listOf(
             "com.android.server.location.gnss.GnssManagerService",
@@ -826,10 +821,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 拦截跨进程 Parcel 中的 ScanResult / CellInfo 列表，
-     * 覆盖标准 framework 与 Android 16 独立 Wi-Fi Mainline APEX 的 ParceledListSlice 类加载器
-     */
     private fun hookParceledListSlice() {
         val sliceClassNames = listOf(
             "android.content.pm.ParceledListSlice",
@@ -883,10 +874,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 在 WifiInfo 通过 Binder 写入 Parcel 发往三方应用前临时脱敏 BSSID/MAC/AP MLD MAC，
-     * 序列化完成后立即还原，避免影响系统内部 Wi-Fi 状态与状态栏显示
-     */
     private fun hookWifiInfoSerialization() {
         try {
             val bssidField: Field? = XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mBSSID")
@@ -981,9 +968,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 在 system_server 拦截 TelephonyRegistry 异步推送基站列表与位置变更
-     */
     private fun hookTelephonyRegistryInSystemServer(classLoader: ClassLoader) {
         try {
             val regCls = XposedHelpers.findClassIfExists(
@@ -1025,9 +1009,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 关键防漂移通道：拦截 Android 10–16 ServiceState -> NetworkRegistrationInfo 中的 mCellIdentity。
-     */
     private fun hookNetworkRegistrationInfo(classLoader: ClassLoader) {
         try {
             val nriCls = XposedHelpers.findClassIfExists(
@@ -1094,9 +1075,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 在 com.android.phone 进程隔离蜂窝基站信息返回给三方应用
-     */
     private fun hookPhoneInterfaceManager(classLoader: ClassLoader) {
         try {
             val phoneMgrCls = XposedHelpers.findClassIfExists(
