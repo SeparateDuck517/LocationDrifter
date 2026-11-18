@@ -28,7 +28,10 @@ import java.util.Locale
 import kotlin.random.Random
 
 /**
- * 持续向系统 LocationManager 注入虚拟位置（模拟外接硬件 GNSS 接收器特征，支持 Root、Shizuku 与开发者选项模式）
+ * 持续向系统 LocationManager 注入虚拟位置：
+ * - 当 Root + LSPosed system_server Hook 已激活时，由 system_server 原生下发无 Mock 标记的虚拟坐标与 12 颗卫星，
+ *   不再注册系统 TestProvider，彻底规避 OEM 框架对 MockLocationProvider 的风控标记；
+ * - 当处于免 Root / Shizuku 模式时，自动注册 TestProvider 持续推送虚拟坐标。
  */
 class MockLocationService : Service() {
 
@@ -63,11 +66,18 @@ class MockLocationService : Service() {
                 stopSelf()
                 return
             }
-            if (activeProviders.isEmpty() && RootUtils.isMockLocationAllowed(this@MockLocationService)) {
-                setupTestProviders()
-                updateNotification(cfg)
+            if (RootUtils.isSystemServerHookActive(this@MockLocationService)) {
+                if (activeProviders.isNotEmpty()) {
+                    clearTestProviders()
+                }
+                isMockingEffective = true
+            } else {
+                if (activeProviders.isEmpty() && RootUtils.isMockLocationAllowed(this@MockLocationService)) {
+                    setupTestProviders()
+                    updateNotification(cfg)
+                }
+                pushLocationToProviders(cfg)
             }
-            pushLocationToProviders(cfg)
             workerHandler?.postDelayed(this, UPDATE_INTERVAL_MS)
         }
     }
@@ -95,11 +105,16 @@ class MockLocationService : Service() {
                     startMocking(cfg)
                 } else {
                     workerHandler?.post {
-                        if (activeProviders.isEmpty()) {
-                            setupTestProviders()
+                        if (RootUtils.isSystemServerHookActive(this)) {
+                            clearTestProviders()
+                            isMockingEffective = true
+                        } else {
+                            if (activeProviders.isEmpty()) {
+                                setupTestProviders()
+                            }
+                            pushLocationToProviders(cfg)
                         }
                         updateNotification(cfg)
-                        pushLocationToProviders(cfg)
                     }
                 }
             }
@@ -141,16 +156,23 @@ class MockLocationService : Service() {
         }
 
         workerHandler?.post {
-            if (!RootUtils.isMockLocationAllowed(this)) {
-                if (RootUtils.isRootAvailable()) {
-                    RootUtils.grantMockAndLocationPermissions(packageName)
-                } else if (ShizukuHelper.hasPermission()) {
-                    ShizukuHelper.grantMockAndLocationPermissions(this)
+            if (RootUtils.isSystemServerHookActive(this)) {
+                // system_server Hook 已接管，不注册 TestProvider 避免留下 Mock 痕迹
+                clearTestProviders()
+                isMockingEffective = true
+                updateNotification(cfg)
+            } else {
+                if (!RootUtils.isMockLocationAllowed(this)) {
+                    if (RootUtils.isRootAvailable()) {
+                        RootUtils.grantMockAndLocationPermissions(packageName)
+                    } else if (ShizukuHelper.hasPermission()) {
+                        ShizukuHelper.grantMockAndLocationPermissions(this)
+                    }
                 }
+                setupTestProviders()
+                updateNotification(cfg)
+                pushLocationToProviders(cfg)
             }
-            setupTestProviders()
-            updateNotification(cfg)
-            pushLocationToProviders(cfg)
             workerHandler?.removeCallbacks(pushRunnable)
             workerHandler?.postDelayed(pushRunnable, UPDATE_INTERVAL_MS)
         }
@@ -206,6 +228,17 @@ class MockLocationService : Service() {
         isMockingEffective = activeProviders.isNotEmpty()
     }
 
+    private fun clearTestProviders() {
+        for (provider in activeProviders) {
+            try {
+                locationManager.setTestProviderEnabled(provider, false)
+                locationManager.removeTestProvider(provider)
+            } catch (_: Throwable) {
+            }
+        }
+        activeProviders.clear()
+    }
+
     private fun pushLocationToProviders(cfg: ConfigManager.DriftConfig) {
         val jitterLat = if (cfg.enableJitter) Random.nextDouble(-0.000003, 0.000003) else 0.0
         val jitterLng = if (cfg.enableJitter) Random.nextDouble(-0.000003, 0.000003) else 0.0
@@ -249,14 +282,7 @@ class MockLocationService : Service() {
         isRunning = false
         isMockingEffective = false
         workerHandler?.removeCallbacksAndMessages(null)
-        for (provider in activeProviders) {
-            try {
-                locationManager.setTestProviderEnabled(provider, false)
-                locationManager.removeTestProvider(provider)
-            } catch (_: Throwable) {
-            }
-        }
-        activeProviders.clear()
+        clearTestProviders()
         workerThread?.quitSafely()
         workerThread = null
         workerHandler = null
@@ -321,7 +347,8 @@ class MockLocationService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val missingAuth = isRunning && !isMockingEffective && !RootUtils.isMockLocationAllowed(this)
+        val sysHookActive = RootUtils.isSystemServerHookActive(this)
+        val missingAuth = isRunning && !sysHookActive && !isMockingEffective && !RootUtils.isMockLocationAllowed(this)
         val title = if (missingAuth) {
             "定位漂移助手（等待模拟位置授权）"
         } else {

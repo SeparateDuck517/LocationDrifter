@@ -1,7 +1,9 @@
 package com.separ.locationdrifter.xposed
 
 import android.app.AndroidAppHelper
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationManager
@@ -50,6 +52,13 @@ class LocationHookEntry : IXposedHookLoadPackage {
         private const val FIRST_APPLICATION_UID = 10000
         private const val HAS_MOCK_PROVIDER_MASK = 1 shl 4
 
+        private val KNOWN_PROVIDERS = setOf(
+            LocationManager.GPS_PROVIDER,
+            LocationManager.NETWORK_PROVIDER,
+            LocationManager.PASSIVE_PROVIDER,
+            "fused"
+        )
+
         private val SYSTEM_UI_BYPASS_PACKAGES = setOf(
             "com.separ.locationdrifter",
             "com.android.systemui",
@@ -69,6 +78,11 @@ class LocationHookEntry : IXposedHookLoadPackage {
 
     private data class TrackedListener(
         val listener: Any,
+        val provider: String
+    )
+
+    private data class TrackedPendingIntent(
+        val pendingIntent: PendingIntent,
         val provider: String
     )
 
@@ -96,6 +110,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
     private val wifiApexHooked = AtomicBoolean(false)
     private val feederStarted = AtomicBoolean(false)
     private val activeListeners = ConcurrentHashMap<IBinder, TrackedListener>()
+    private val activePendingIntents = ConcurrentHashMap<PendingIntent, TrackedPendingIntent>()
     private val uidBypassCache = ConcurrentHashMap<Int, Boolean>()
     private val uidModuleSelfCache = ConcurrentHashMap<Int, Boolean>()
 
@@ -116,6 +131,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
     private val wifiSsidField: Field? by lazy {
         XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mWifiSsid")
+    }
+    private val wifiNetworkIdField: Field? by lazy {
+        XposedHelpers.findFieldIfExists(WifiInfo::class.java, "mNetworkId")
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -160,9 +178,46 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
 
     /**
-     * Android 11–16 独立 Wi-Fi Mainline APEX (service-wifi.jar) 使用独立的 PathClassLoader，
-     * 通过拦截 SystemServiceManager.startService 与 ClassLoader.loadClass 捕获其真实类加载器并挂载隔离钩子。
+     * 精准提取真实 LocationProvider 名称（gps / network / fused / passive）：
+     * 避免 Android 12–16 中 getLastLocation(LocationRequest, packageName, attributionTag)
+     * 误将调用方包名 (如 com.tencent.mm) 当作 provider 导致 SDK 拒收坐标。
      */
+    private fun resolveProviderName(param: XC_MethodHook.MethodHookParam): String {
+        // 1. 若宿主对象为 LocationProviderManager，直接读取其 mName 字段
+        try {
+            val target = param.thisObject
+            if (target != null && target.javaClass.name.contains("LocationProviderManager")) {
+                val mName = XposedHelpers.getObjectField(target, "mName") as? String
+                if (!mName.isNullOrBlank() && mName in KNOWN_PROVIDERS) {
+                    return mName
+                }
+            }
+        } catch (_: Throwable) {
+        }
+
+        // 2. 若参数列表包含 android.location.LocationRequest，调用其 getProvider()
+        for (arg in param.args) {
+            if (arg != null && arg.javaClass.name == "android.location.LocationRequest") {
+                try {
+                    val reqProv = XposedHelpers.callMethod(arg, "getProvider") as? String
+                    if (!reqProv.isNullOrBlank() && reqProv in KNOWN_PROVIDERS) {
+                        return reqProv
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+        }
+
+        // 3. 仅接受合法 Provider 名称字符串
+        for (arg in param.args) {
+            if (arg is String && arg in KNOWN_PROVIDERS) {
+                return arg
+            }
+        }
+
+        return LocationManager.GPS_PROVIDER
+    }
+
     private fun hookWifiMainlineApexLoader(systemClassLoader: ClassLoader) {
         try {
             val ssmCls = XposedHelpers.findClassIfExists(
@@ -222,8 +277,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
 
     /**
-     * 在 system_server 内持续向已注册的三方定位监听器推送虚拟 GPS 坐标（1Hz 心跳），
-     * 解决室内无真实卫星信号时仅首帧触发回调、后续无连续位置流的问题。
+     * 在 system_server 内持续向已注册的 ILocationListener 与 PendingIntent 推送虚拟 GPS 坐标（1Hz 心跳）
      */
     private fun startSystemGpsFeederLoop() {
         if (!feederStarted.compareAndSet(false, true)) return
@@ -232,34 +286,60 @@ class LocationHookEntry : IXposedHookLoadPackage {
                 try {
                     Thread.sleep(FEED_INTERVAL_MS)
                     val cfg = getConfig()
-                    if (!cfg.enabled || activeListeners.isEmpty()) continue
+                    if (!cfg.enabled) continue
 
-                    val iterator = activeListeners.entries.iterator()
-                    while (iterator.hasNext()) {
-                        val entry = iterator.next()
-                        val binder = entry.key
-                        if (!binder.isBinderAlive) {
-                            iterator.remove()
-                            continue
-                        }
-                        val tracked = entry.value
-                        val fakeLoc = buildFakeLocation(tracked.provider, cfg)
-                        val token = Binder.clearCallingIdentity()
-                        try {
-                            try {
-                                XposedHelpers.callMethod(
-                                    tracked.listener,
-                                    "onLocationChanged",
-                                    Collections.singletonList(fakeLoc),
-                                    null
-                                )
-                            } catch (_: Throwable) {
-                                XposedHelpers.callMethod(tracked.listener, "onLocationChanged", fakeLoc)
+                    if (activeListeners.isNotEmpty()) {
+                        val iterator = activeListeners.entries.iterator()
+                        while (iterator.hasNext()) {
+                            val entry = iterator.next()
+                            val binder = entry.key
+                            if (!binder.isBinderAlive) {
+                                iterator.remove()
+                                continue
                             }
-                        } catch (_: Throwable) {
-                            iterator.remove()
-                        } finally {
-                            Binder.restoreCallingIdentity(token)
+                            val tracked = entry.value
+                            val fakeLoc = buildFakeLocation(tracked.provider, cfg)
+                            val token = Binder.clearCallingIdentity()
+                            try {
+                                try {
+                                    XposedHelpers.callMethod(
+                                        tracked.listener,
+                                        "onLocationChanged",
+                                        Collections.singletonList(fakeLoc),
+                                        null
+                                    )
+                                } catch (_: Throwable) {
+                                    XposedHelpers.callMethod(tracked.listener, "onLocationChanged", fakeLoc)
+                                }
+                            } catch (_: Throwable) {
+                                iterator.remove()
+                            } finally {
+                                Binder.restoreCallingIdentity(token)
+                            }
+                        }
+                    }
+
+                    if (activePendingIntents.isNotEmpty()) {
+                        val ctx = resolveContext()
+                        if (ctx != null) {
+                            val piIter = activePendingIntents.entries.iterator()
+                            while (piIter.hasNext()) {
+                                val entry = piIter.next()
+                                val trackedPi = entry.value
+                                val fakeLoc = buildFakeLocation(trackedPi.provider, cfg)
+                                val intent = Intent().apply {
+                                    putExtra(LocationManager.KEY_LOCATION_CHANGED, fakeLoc)
+                                }
+                                val token = Binder.clearCallingIdentity()
+                                try {
+                                    trackedPi.pendingIntent.send(ctx, 0, intent)
+                                } catch (_: PendingIntent.CanceledException) {
+                                    piIter.remove()
+                                } catch (_: Throwable) {
+                                } finally {
+                                    Binder.restoreCallingIdentity(token)
+                                }
+                            }
                         }
                     }
                 } catch (_: InterruptedException) {
@@ -730,10 +810,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
                             if (!shouldSpoofLocationCaller()) return
                             val cfg = getConfig()
                             if (!cfg.enabled) return
+                            val provider = resolveProviderName(param)
                             val existing = param.result as? Location
                             if (existing == null) {
-                                val provider = (param.args.firstOrNull { it is String } as? String)
-                                    ?: LocationManager.GPS_PROVIDER
                                 param.result = buildFakeLocation(provider, cfg)
                             } else {
                                 patchLocationInPlace(existing, cfg)
@@ -754,8 +833,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
                                 arg != null && (arg.javaClass.name.contains("ILocationCallback") ||
                                     arg.javaClass.interfaces.any { it.name == "android.location.ILocationCallback" })
                             } ?: return
-                            val provider = (param.args.firstOrNull { it is String } as? String)
-                                ?: LocationManager.GPS_PROVIDER
+                            val provider = resolveProviderName(param)
                             val token = Binder.clearCallingIdentity()
                             try {
                                 val fakeLoc = buildFakeLocation(provider, cfg)
@@ -769,45 +847,42 @@ class LocationHookEntry : IXposedHookLoadPackage {
                     }
                 )
 
-                XposedBridge.hookAllMethods(
-                    cls,
-                    "registerLocationListener",
-                    object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (!shouldSpoofLocationCaller()) return
-                            val listener = param.args.firstOrNull { arg ->
-                                arg != null && (arg.javaClass.name.contains("ILocationListener") ||
-                                    arg.javaClass.interfaces.any { it.name == "android.location.ILocationListener" })
-                            } ?: return
-                            val provider = (param.args.firstOrNull { it is String } as? String)
-                                ?: LocationManager.GPS_PROVIDER
+                val registerListenerHook = object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (!shouldSpoofLocationCaller()) return
+                        val listener = param.args.firstOrNull { arg ->
+                            arg != null && (arg.javaClass.name.contains("ILocationListener") ||
+                                arg.javaClass.interfaces.any { it.name == "android.location.ILocationListener" })
+                        } ?: return
+                        val provider = resolveProviderName(param)
 
-                            extractListenerBinder(listener)?.let { binder ->
-                                activeListeners[binder] = TrackedListener(listener, provider)
-                            }
+                        extractListenerBinder(listener)?.let { binder ->
+                            activeListeners[binder] = TrackedListener(listener, provider)
+                        }
 
-                            val cfg = getConfig()
-                            if (!cfg.enabled) return
-                            val fakeLoc = buildFakeLocation(provider, cfg)
-                            val token = Binder.clearCallingIdentity()
+                        val cfg = getConfig()
+                        if (!cfg.enabled) return
+                        val fakeLoc = buildFakeLocation(provider, cfg)
+                        val token = Binder.clearCallingIdentity()
+                        try {
+                            XposedHelpers.callMethod(
+                                listener,
+                                "onLocationChanged",
+                                Collections.singletonList(fakeLoc),
+                                null
+                            )
+                        } catch (_: Throwable) {
                             try {
-                                XposedHelpers.callMethod(
-                                    listener,
-                                    "onLocationChanged",
-                                    Collections.singletonList(fakeLoc),
-                                    null
-                                )
+                                XposedHelpers.callMethod(listener, "onLocationChanged", fakeLoc)
                             } catch (_: Throwable) {
-                                try {
-                                    XposedHelpers.callMethod(listener, "onLocationChanged", fakeLoc)
-                                } catch (_: Throwable) {
-                                }
-                            } finally {
-                                Binder.restoreCallingIdentity(token)
                             }
+                        } finally {
+                            Binder.restoreCallingIdentity(token)
                         }
                     }
-                )
+                }
+                XposedBridge.hookAllMethods(cls, "registerLocationListener", registerListenerHook)
+                XposedBridge.hookAllMethods(cls, "registerLocationRequest", registerListenerHook)
 
                 XposedBridge.hookAllMethods(
                     cls,
@@ -821,6 +896,45 @@ class LocationHookEntry : IXposedHookLoadPackage {
                             extractListenerBinder(listener)?.let { binder ->
                                 activeListeners.remove(binder)
                             }
+                        }
+                    }
+                )
+
+                XposedBridge.hookAllMethods(
+                    cls,
+                    "registerLocationPendingIntent",
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            if (!shouldSpoofLocationCaller()) return
+                            val pi = param.args.firstOrNull { it is PendingIntent } as? PendingIntent ?: return
+                            val provider = resolveProviderName(param)
+                            activePendingIntents[pi] = TrackedPendingIntent(pi, provider)
+
+                            val cfg = getConfig()
+                            if (!cfg.enabled) return
+                            val ctx = resolveContext() ?: return
+                            val fakeLoc = buildFakeLocation(provider, cfg)
+                            val intent = Intent().apply {
+                                putExtra(LocationManager.KEY_LOCATION_CHANGED, fakeLoc)
+                            }
+                            val token = Binder.clearCallingIdentity()
+                            try {
+                                pi.send(ctx, 0, intent)
+                            } catch (_: Throwable) {
+                            } finally {
+                                Binder.restoreCallingIdentity(token)
+                            }
+                        }
+                    }
+                )
+
+                XposedBridge.hookAllMethods(
+                    cls,
+                    "unregisterLocationPendingIntent",
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            val pi = param.args.firstOrNull { it is PendingIntent } as? PendingIntent ?: return
+                            activePendingIntents.remove(pi)
                         }
                     }
                 )
@@ -866,10 +980,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
                                 return
                             }
                             if (!getConfig().enabled) return
-                            if (provider == LocationManager.GPS_PROVIDER ||
-                                provider == LocationManager.NETWORK_PROVIDER ||
-                                provider == "fused"
-                            ) {
+                            if (provider in KNOWN_PROVIDERS) {
                                 param.result = true
                             }
                         }
@@ -1072,6 +1183,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
             wifiMacField?.set(info, "02:00:00:00:00:00")
             wifiApMldMacField?.set(info, null)
             wifiSsidField?.set(info, null)
+            wifiNetworkIdField?.setInt(info, -1)
         } catch (_: Throwable) {
         }
     }
@@ -1107,6 +1219,10 @@ class LocationHookEntry : IXposedHookLoadPackage {
                                 param.setObjectExtra("origWifiSsid", f.get(info))
                                 f.set(info, null)
                             }
+                            wifiNetworkIdField?.let { f ->
+                                param.setObjectExtra("origNetId", f.getInt(info))
+                                f.setInt(info, -1)
+                            }
                         } catch (_: Throwable) {
                         }
                     }
@@ -1122,6 +1238,8 @@ class LocationHookEntry : IXposedHookLoadPackage {
                             if (origApMldMac != null) wifiApMldMacField?.set(info, origApMldMac)
                             val origWifiSsid = param.getObjectExtra("origWifiSsid")
                             if (origWifiSsid != null) wifiSsidField?.set(info, origWifiSsid)
+                            val origNetId = param.getObjectExtra("origNetId") as? Int
+                            if (origNetId != null) wifiNetworkIdField?.setInt(info, origNetId)
                         } catch (_: Throwable) {
                         }
                     }
@@ -1406,7 +1524,8 @@ class LocationHookEntry : IXposedHookLoadPackage {
     }
 
     private fun buildFakeLocation(provider: String, cfg: RuntimeConfig): Location {
-        return Location(provider).apply {
+        val validProvider = if (provider in KNOWN_PROVIDERS) provider else LocationManager.GPS_PROVIDER
+        return Location(validProvider).apply {
             latitude = jitteredLat(cfg)
             longitude = jitteredLng(cfg)
             altitude = 36.0
@@ -1430,6 +1549,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
 
     private fun patchLocationInPlace(loc: Location, cfg: RuntimeConfig) {
         try {
+            if (loc.provider !in KNOWN_PROVIDERS) {
+                loc.provider = LocationManager.GPS_PROVIDER
+            }
             loc.latitude = jitteredLat(cfg)
             loc.longitude = jitteredLng(cfg)
             loc.time = System.currentTimeMillis()
