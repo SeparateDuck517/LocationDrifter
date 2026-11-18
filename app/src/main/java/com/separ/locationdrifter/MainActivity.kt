@@ -312,12 +312,13 @@ class MainActivity : Activity() {
     }
 
     private fun updateEnvironmentUI() {
-        hasXposed = ModuleStatus.isModuleActive() || ConfigManager.isWorldReadableSupported(this)
+        // 严格依赖模块自 Hook 状态（New XSharedPreferences 在模块开关关闭时仍可能返回 true，不可作为激活依据）
+        hasXposed = ModuleStatus.isModuleActive()
 
         if (!rootCheckCompleted) {
             tvRootStatus.text = "Root: 检测中..."
             tvRootStatus.setTextColor(Color.parseColor("#475569"))
-            tvXposedStatus.text = if (hasXposed) "LSPosed: 已激活" else "LSPosed: 检测中..."
+            tvXposedStatus.text = if (hasXposed) "LSPosed: 已激活 ✓" else "LSPosed: 检测中..."
             tvXposedStatus.setTextColor(
                 if (hasXposed) Color.parseColor("#059669") else Color.parseColor("#475569")
             )
