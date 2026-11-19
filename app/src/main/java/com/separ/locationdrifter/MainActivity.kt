@@ -18,6 +18,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
 import android.location.LocationManager
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -51,7 +52,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.separ.locationdrifter.data.ConfigManager
+import com.separ.locationdrifter.data.RouteManager
 import com.separ.locationdrifter.service.DriftVpnService
+import com.separ.locationdrifter.service.JoystickOverlayService
 import com.separ.locationdrifter.service.MockLocationService
 import com.separ.locationdrifter.util.CoordTransform
 import com.separ.locationdrifter.util.RootUtils
@@ -77,6 +80,7 @@ class MainActivity : Activity() {
         private const val REQ_PERMISSIONS = 101
         private const val REQ_VPN = 102
         private const val REQ_SHIZUKU = 103
+        private const val REQ_OVERLAY = 104
         private const val UI_PREFS_NAME = "ui_state_prefs"
         private const val KEY_XPOSED_REBOOT_PROMPTED = "xposed_reboot_prompted"
         private const val KEY_SELECTED_WORK_MODE = "selected_work_mode"
@@ -185,6 +189,19 @@ class MainActivity : Activity() {
     private lateinit var tvCoords: TextView
     private lateinit var btnCopyCoord: TextView
 
+    // 摇杆与轨迹控制视图
+    private lateinit var routeControlCard: LinearLayout
+    private lateinit var tvRouteInfo: TextView
+    private lateinit var btnRouteUndo: TextView
+    private lateinit var btnRouteClear: TextView
+    private lateinit var btnRouteSave: TextView
+    private lateinit var btnRouteSpeed: Button
+    private lateinit var btnRouteLoop: Button
+    private lateinit var btnRoutePlayPause: Button
+    private lateinit var btnToggleJoystick: Button
+    private lateinit var btnDrawRoute: Button
+    private lateinit var btnSavedRoutes: Button
+
     private lateinit var webMap: WebView
     private lateinit var cbSystemMock: CheckBox
     private lateinit var cbAntiDrift: CheckBox
@@ -217,11 +234,55 @@ class MainActivity : Activity() {
     private var suppressCheckboxCallback = false
     private var isImeVisible = false
 
+    // 轨迹绘制与巡航状态
+    private var isRouteDrawMode = false
+    private var activeRoutePoints: List<RouteManager.RoutePoint> = emptyList()
+    private var routeTotalMeters: Double = 0.0
+    private var routeSpeedMps: Float = 4.0f
+    private var routeLoopMode: Int = RouteManager.LOOP_ONCE
+
     private var btnColorAnimator: ValueAnimator? = null
     private var statusPulseAnimator: ObjectAnimator? = null
 
     private var modeDialog: AlertDialog? = null
     private var modeDialogRefreshCallback: (() -> Unit)? = null
+
+    private val livePositionListener = object : MockLocationService.PositionListener {
+        override fun onLivePositionUpdated(
+            gcjLat: Double,
+            gcjLng: Double,
+            wgsLat: Double,
+            wgsLng: Double,
+            address: String,
+            bearingDeg: Float,
+            speedMps: Float
+        ) {
+            if (isFinishing || isDestroyed) return
+            currentGcjLat = gcjLat
+            currentGcjLng = gcjLng
+            currentWgsLat = wgsLat
+            currentWgsLng = wgsLng
+            currentAddress = address
+            updateCoordTexts()
+            val js = String.format(Locale.US, "window.updateLivePosition(%.8f, %.8f, true)", gcjLat, gcjLng)
+            webMap.evaluateJavascript(js, null)
+        }
+    }
+
+    private val routeStateListener = object : MockLocationService.RouteStateListener {
+        override fun onRouteStateChanged(
+            isPlaying: Boolean,
+            traveledMeters: Double,
+            totalMeters: Double,
+            finished: Boolean
+        ) {
+            if (isFinishing || isDestroyed) return
+            refreshRoutePanelUI(traveledMeters = traveledMeters, totalMetersOverride = totalMeters)
+            if (finished) {
+                toast("已到达轨迹终点")
+            }
+        }
+    }
 
     private val keyboardLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
         val rect = Rect()
@@ -293,6 +354,18 @@ class MainActivity : Activity() {
         initWebView()
         checkEnvironmentStatus()
         requestBasicPermissionsIfNeeded()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        MockLocationService.addPositionListener(livePositionListener)
+        MockLocationService.addRouteStateListener(routeStateListener)
+    }
+
+    override fun onStop() {
+        MockLocationService.removePositionListener(livePositionListener)
+        MockLocationService.removeRouteStateListener(routeStateListener)
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -378,6 +451,9 @@ class MainActivity : Activity() {
         updateEnvironmentUI()
         refreshRunStatusUI(animate = false)
         refreshFavoritesCount()
+        refreshJoystickButtonUI()
+        refreshSavedRoutesCount()
+        refreshRoutePanelUI()
         modeDialogRefreshCallback?.invoke()
     }
 
@@ -451,6 +527,18 @@ class MainActivity : Activity() {
         tvCoords = findViewById(R.id.tvCoords)
         btnCopyCoord = findViewById(R.id.btnCopyCoord)
 
+        routeControlCard = findViewById(R.id.routeControlCard)
+        tvRouteInfo = findViewById(R.id.tvRouteInfo)
+        btnRouteUndo = findViewById(R.id.btnRouteUndo)
+        btnRouteClear = findViewById(R.id.btnRouteClear)
+        btnRouteSave = findViewById(R.id.btnRouteSave)
+        btnRouteSpeed = findViewById(R.id.btnRouteSpeed)
+        btnRouteLoop = findViewById(R.id.btnRouteLoop)
+        btnRoutePlayPause = findViewById(R.id.btnRoutePlayPause)
+        btnToggleJoystick = findViewById(R.id.btnToggleJoystick)
+        btnDrawRoute = findViewById(R.id.btnDrawRoute)
+        btnSavedRoutes = findViewById(R.id.btnSavedRoutes)
+
         webMap = findViewById(R.id.webMap)
         cbSystemMock = findViewById(R.id.cbSystemMock)
         cbAntiDrift = findViewById(R.id.cbAntiDrift)
@@ -470,11 +558,16 @@ class MainActivity : Activity() {
         attachPressScaleEffect(btnInputCoord, 0.96f)
         attachPressScaleEffect(btnAddFavorite, 0.96f)
         attachPressScaleEffect(btnFavorites, 0.96f)
+        attachPressScaleEffect(btnToggleJoystick, 0.96f)
+        attachPressScaleEffect(btnDrawRoute, 0.96f)
+        attachPressScaleEffect(btnSavedRoutes, 0.96f)
+        attachPressScaleEffect(btnRoutePlayPause, 0.96f)
         attachPressScaleEffect(btnSwitchMode, 0.95f)
         attachPressScaleEffect(btnHelpGuide, 0.95f)
         attachPressScaleEffect(btnCopyCoord, 0.95f)
 
         setupNativeSearchBar()
+        setupJoystickAndRouteControls()
 
         btnCopyCoord.setOnClickListener { copyCurrentCoordsToClipboard() }
         btnInputCoord.setOnClickListener { showManualCoordDialog() }
@@ -524,6 +617,319 @@ class MainActivity : Activity() {
                 applyUpdatedCoordinates()
             }
         }
+    }
+
+    private fun setupJoystickAndRouteControls() {
+        btnToggleJoystick.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            toggleJoystickOverlay()
+        }
+
+        btnDrawRoute.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            setRouteDrawMode(!isRouteDrawMode)
+        }
+
+        btnSavedRoutes.setOnClickListener {
+            showSavedRoutesDialog()
+        }
+
+        btnRouteUndo.setOnClickListener {
+            webMap.evaluateJavascript("window.undoRoutePoint()", null)
+        }
+
+        btnRouteClear.setOnClickListener {
+            MockLocationService.resetRoutePlaybackState()
+            RouteManager.setActiveRoutePoints(this, emptyList())
+            activeRoutePoints = emptyList()
+            routeTotalMeters = 0.0
+            webMap.evaluateJavascript("window.clearRoute()", null)
+            refreshRoutePanelUI()
+            toast("已清空轨迹")
+        }
+
+        btnRouteSave.setOnClickListener {
+            showSaveRouteDialog()
+        }
+
+        btnRouteSpeed.setOnClickListener {
+            routeSpeedMps = RouteManager.nextSpeedPreset(routeSpeedMps)
+            RouteManager.setActiveRouteSpeed(this, routeSpeedMps)
+            refreshRoutePanelUI()
+        }
+
+        btnRouteLoop.setOnClickListener {
+            routeLoopMode = RouteManager.nextLoopMode(routeLoopMode)
+            RouteManager.setActiveLoopMode(this, routeLoopMode)
+            refreshRoutePanelUI()
+        }
+
+        btnRoutePlayPause.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            toggleRoutePlayback()
+        }
+    }
+
+    private fun toggleJoystickOverlay() {
+        if (JoystickOverlayService.isRunning) {
+            val stopIntent = Intent(this, JoystickOverlayService::class.java).apply {
+                action = JoystickOverlayService.ACTION_STOP
+            }
+            startService(stopIntent)
+            btnToggleJoystick.postDelayed({ refreshJoystickButtonUI() }, 120L)
+            toast("已关闭悬浮摇杆")
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("需要悬浮窗权限")
+                .setMessage("开启全局悬浮摇杆需要「显示在其他应用上层」权限，授权后即可在任意应用界面实时控制移动方向。")
+                .setPositiveButton("去授权") { _, _ ->
+                    try {
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:$packageName")
+                        )
+                        startActivityForResult(intent, REQ_OVERLAY)
+                    } catch (_: Throwable) {
+                        toast("无法打开悬浮窗权限页，请在系统设置中手动开启")
+                    }
+                }
+                .setNegativeButton("取消", null)
+                .show()
+            return
+        }
+
+        startJoystickOverlayService()
+    }
+
+    private fun startJoystickOverlayService() {
+        val intent = Intent(this, JoystickOverlayService::class.java).apply {
+            action = JoystickOverlayService.ACTION_START
+        }
+        startService(intent)
+        btnToggleJoystick.postDelayed({ refreshJoystickButtonUI() }, 120L)
+        if (isEnabled) {
+            toast("悬浮摇杆已开启，拖动即可实时移动")
+        } else {
+            toast("悬浮摇杆已开启（请点击「开启定位漂移」使坐标生效）")
+        }
+    }
+
+    private fun refreshJoystickButtonUI() {
+        val running = JoystickOverlayService.isRunning
+        btnToggleJoystick.text = if (running) "关闭摇杆" else "悬浮摇杆"
+        btnToggleJoystick.setTextColor(Color.parseColor(if (running) "#DC2626" else "#1D4ED8"))
+    }
+
+    private fun setRouteDrawMode(enabled: Boolean) {
+        isRouteDrawMode = enabled
+        webMap.evaluateJavascript("window.setRouteDrawMode($enabled)", null)
+        btnDrawRoute.text = if (enabled) "完成绘制" else "绘制轨迹"
+        btnDrawRoute.setTextColor(Color.parseColor(if (enabled) "#059669" else "#1D4ED8"))
+        if (enabled) {
+            toast("点击地图依次添加轨迹途经点，可拖拽节点微调")
+        }
+        refreshRoutePanelUI()
+    }
+
+    private fun toggleRoutePlayback() {
+        if (MockLocationService.isRoutePlaying) {
+            val pauseIntent = Intent(this, MockLocationService::class.java).apply {
+                action = MockLocationService.ACTION_PAUSE_ROUTE
+            }
+            startService(pauseIntent)
+            refreshRoutePanelUI()
+            toast("已暂停轨迹模拟")
+            return
+        }
+
+        if (activeRoutePoints.size < 2) {
+            toast("请先在地图上点击添加至少 2 个轨迹点")
+            if (!isRouteDrawMode) {
+                setRouteDrawMode(true)
+            }
+            return
+        }
+
+        if (isRouteDrawMode) {
+            setRouteDrawMode(false)
+        }
+
+        RouteManager.setActiveRoutePoints(this, activeRoutePoints)
+        RouteManager.setActiveRouteSpeed(this, routeSpeedMps)
+        RouteManager.setActiveLoopMode(this, routeLoopMode)
+
+        // 若尚未开启定位漂移，自动同步起点并启动漂移服务
+        if (!isEnabled) {
+            val first = activeRoutePoints.first()
+            applyPickedLocation(first.gcjLat, first.gcjLng, first.wgsLat, first.wgsLng, "轨迹起点")
+            startDrifting(autoStartRoute = true)
+            return
+        }
+
+        startRoutePlaybackService()
+    }
+
+    private fun startRoutePlaybackService() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestBasicPermissionsIfNeeded()
+            toast("请授予位置权限")
+            return
+        }
+        val intent = Intent(this, MockLocationService::class.java).apply {
+            action = MockLocationService.ACTION_START_ROUTE
+        }
+        startForegroundService(intent)
+        toast("开始沿轨迹模拟移动（${RouteManager.speedShortLabel(routeSpeedMps)}）")
+    }
+
+    private fun refreshRoutePanelUI(
+        traveledMeters: Double = MockLocationService.routeTraveledMeters,
+        totalMetersOverride: Double = -1.0
+    ) {
+        val shouldShow = isRouteDrawMode || activeRoutePoints.isNotEmpty() || MockLocationService.isRoutePlaying
+        if (routeControlCard.visibility != if (shouldShow) View.VISIBLE else View.GONE) {
+            val transition = AutoTransition().apply {
+                duration = 180L
+                interpolator = DecelerateInterpolator()
+            }
+            TransitionManager.beginDelayedTransition(bottomControlPanel, transition)
+            routeControlCard.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        }
+
+        val total = if (totalMetersOverride >= 0.0) totalMetersOverride else routeTotalMeters
+        val playing = MockLocationService.isRoutePlaying
+        tvRouteInfo.text = when {
+            playing && total > 0.01 -> {
+                val pct = ((traveledMeters / total) * 100.0).toInt().coerceIn(0, 100)
+                "模拟中 $pct% · ${RouteManager.formatDistance(traveledMeters)} / ${RouteManager.formatDistance(total)}"
+            }
+            activeRoutePoints.isEmpty() -> "绘制中：点击地图添加途经点"
+            else -> "轨迹: ${activeRoutePoints.size} 点 · ${RouteManager.formatDistance(total)}"
+        }
+
+        btnRouteSpeed.text = RouteManager.speedShortLabel(routeSpeedMps)
+        btnRouteLoop.text = RouteManager.loopModeLabel(routeLoopMode)
+        btnRoutePlayPause.text = if (playing) "⏸ 暂停轨迹" else "▶ 开始轨迹模拟"
+        btnRoutePlayPause.background = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            if (playing) {
+                intArrayOf(Color.parseColor("#F59E0B"), Color.parseColor("#D97706"))
+            } else {
+                intArrayOf(Color.parseColor("#3B82F6"), Color.parseColor("#1D4ED8"))
+            }
+        ).apply {
+            cornerRadius = dp(10).toFloat()
+        }
+    }
+
+    private fun refreshSavedRoutesCount() {
+        val count = RouteManager.getSavedRoutes(this).size
+        btnSavedRoutes.text = if (count > 0) "轨迹库 ($count)" else "轨迹库"
+    }
+
+    private fun showSaveRouteDialog() {
+        if (activeRoutePoints.size < 2) {
+            toast("至少需要 2 个轨迹点才可保存")
+            return
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        val defaultName = "轨迹 ${activeRoutePoints.size}点 (${RouteManager.formatDistance(routeTotalMeters)})"
+        val etName = EditText(this).apply {
+            setText(defaultName)
+            hint = "请输入轨迹名称"
+        }
+        layout.addView(etName)
+
+        AlertDialog.Builder(this)
+            .setTitle("保存当前轨迹")
+            .setView(layout)
+            .setPositiveButton("保存") { _, _ ->
+                val name = etName.text.toString().trim().ifBlank { defaultName }
+                RouteManager.saveRoute(
+                    this,
+                    RouteManager.SavedRoute(
+                        name = name,
+                        points = activeRoutePoints,
+                        speedMps = routeSpeedMps,
+                        loopMode = routeLoopMode
+                    )
+                )
+                refreshSavedRoutesCount()
+                toast("已保存轨迹：$name")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showSavedRoutesDialog() {
+        val list = RouteManager.getSavedRoutes(this)
+        if (list.isEmpty()) {
+            toast("轨迹库为空，请先点击「绘制轨迹」并保存")
+            return
+        }
+        val items = list.map { r ->
+            val dist = RouteManager.formatDistance(RouteManager.totalDistanceMeters(r.points))
+            "${r.name}  (${r.points.size}点 · $dist · ${RouteManager.speedShortLabel(r.speedMps)})"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("轨迹库（点击加载）")
+            .setItems(items) { _, which ->
+                val route = list[which]
+                MockLocationService.resetRoutePlaybackState()
+                activeRoutePoints = route.points
+                routeTotalMeters = RouteManager.totalDistanceMeters(route.points)
+                routeSpeedMps = route.speedMps
+                routeLoopMode = route.loopMode
+                RouteManager.setActiveRoutePoints(this, route.points)
+                RouteManager.setActiveRouteSpeed(this, route.speedMps)
+                RouteManager.setActiveLoopMode(this, route.loopMode)
+                setRouteDrawMode(false)
+                syncRouteToWebMap(route.points)
+                val first = route.points.first()
+                applyPickedLocation(first.gcjLat, first.gcjLng, first.wgsLat, first.wgsLng, route.name)
+                refreshRoutePanelUI()
+                toast("已加载轨迹：${route.name}")
+            }
+            .setNeutralButton("管理") { _, _ ->
+                showDeleteSavedRouteDialog(list)
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun showDeleteSavedRouteDialog(list: List<RouteManager.SavedRoute>) {
+        val items = list.map { "删除：${it.name}" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("删除已保存轨迹")
+            .setItems(items) { _, which ->
+                val removed = list[which].name
+                RouteManager.removeSavedRoute(this, which)
+                refreshSavedRoutesCount()
+                toast("已删除：$removed")
+            }
+            .setNeutralButton("清空") { _, _ ->
+                RouteManager.clearSavedRoutes(this)
+                refreshSavedRoutesCount()
+                toast("已清空轨迹库")
+            }
+            .setNegativeButton("返回") { _, _ ->
+                showSavedRoutesDialog()
+            }
+            .show()
+    }
+
+    private fun syncRouteToWebMap(points: List<RouteManager.RoutePoint>) {
+        val quoted = JSONObject.quote(RouteManager.pointsToJsonArray(points).toString())
+        webMap.evaluateJavascript("window.loadRoutePoints($quoted)", null)
     }
 
     private fun setupNativeSearchBar() {
@@ -770,13 +1176,17 @@ class MainActivity : Activity() {
         WorkMode.fromKey(savedRaw)?.let {
             selectedMode = it
         }
-        // 预加载上次缓存的 Root 状态，冷启动首帧零延迟渲染，无需等待 su 子进程
         if (savedRaw != null) {
             hasRoot = uiPrefs.getBoolean(KEY_CACHED_HAS_ROOT, false)
             rootCheckCompleted = true
         }
         shizukuAutoSuppressScan = uiPrefs.getBoolean(KEY_SHIZUKU_AUTO_SUPPRESS_SCAN, true)
         shizukuIsolateTargetApps = uiPrefs.getBoolean(KEY_SHIZUKU_ISOLATE_TARGET_APPS, false)
+
+        activeRoutePoints = RouteManager.getActiveRoutePoints(this)
+        routeTotalMeters = RouteManager.totalDistanceMeters(activeRoutePoints)
+        routeSpeedMps = RouteManager.getActiveRouteSpeed(this)
+        routeLoopMode = RouteManager.getActiveLoopMode(this)
 
         suppressCheckboxCallback = true
         val cfg = ConfigManager.load(this)
@@ -809,6 +1219,9 @@ class MainActivity : Activity() {
         updateCoordTexts()
         refreshRunStatusUI(animate = false)
         refreshFavoritesCount()
+        refreshSavedRoutesCount()
+        refreshJoystickButtonUI()
+        refreshRoutePanelUI()
     }
 
     private fun saveSelectedMode(mode: WorkMode) {
@@ -1928,8 +2341,8 @@ class MainActivity : Activity() {
                     addStepCard(
                         root,
                         "2",
-                        "实时切换地点",
-                        "漂移中重新选点后点击「同步新选点」，600ms 内全局生效。"
+                        "实时切换、摇杆与轨迹模拟",
+                        "漂移中支持悬浮摇杆实时控向，或提前绘制多点轨迹并按设定速度自动巡航。"
                     )
                 }
             }
@@ -2009,7 +2422,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startDrifting() {
+    private fun startDrifting(autoStartRoute: Boolean = false) {
         if (!cbSystemMock.isChecked && !cbVpn.isChecked && !cbIptables.isChecked && !cbAntiDrift.isChecked) {
             toast("请至少勾选一项策略")
             return
@@ -2027,12 +2440,14 @@ class MainActivity : Activity() {
                 val isolateApps = shizukuIsolateTargetApps
                 val alreadyMockAllowed = RootUtils.isMockLocationAllowed(this)
 
-                // 乐观响应：立即切换按钮过渡动画与运行状态，消除点击卡顿感
                 isEnabled = true
                 ConfigManager.save(this, cfg, syncTmpWithRoot = false)
                 refreshRunStatusUI(animate = true)
                 if (alreadyMockAllowed) {
                     launchForegroundServices(cfg)
+                    if (autoStartRoute) {
+                        startRoutePlaybackService()
+                    }
                 }
 
                 ShizukuHelper.runShizukuTask {
@@ -2065,14 +2480,19 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         if (!alreadyMockAllowed && isEnabled) {
                             launchForegroundServices(cfg)
+                            if (autoStartRoute) {
+                                startRoutePlaybackService()
+                            }
                         }
                         updateEnvironmentUI()
-                        val msg = when {
-                            isolatedCount > 0 -> "已开启（已隔离 $isolatedCount 个指定应用）"
-                            suppressScan -> "已开启（已自动关扫描）"
-                            else -> "已开启定位漂移"
+                        if (!autoStartRoute) {
+                            val msg = when {
+                                isolatedCount > 0 -> "已开启（已隔离 $isolatedCount 个指定应用）"
+                                suppressScan -> "已开启（已自动关扫描）"
+                                else -> "已开启定位漂移"
+                            }
+                            toast(msg)
                         }
-                        toast(msg)
                     }
                 }
             }
@@ -2088,7 +2508,11 @@ class MainActivity : Activity() {
                 ConfigManager.save(this, cfg, syncTmpWithRoot = false)
                 refreshRunStatusUI(animate = true)
                 launchForegroundServices(cfg)
-                toast("已开启定位漂移")
+                if (autoStartRoute) {
+                    startRoutePlaybackService()
+                } else {
+                    toast("已开启定位漂移")
+                }
             }
 
             WorkMode.ROOT_LSPOSED -> {
@@ -2099,14 +2523,17 @@ class MainActivity : Activity() {
                         return
                     }
                 }
-                // 乐观响应：立即执行平滑过渡动画并拉起服务，后台单次 su 写入配置与 iptables
                 isEnabled = true
                 val cfg = buildCurrentConfig(enabled = true)
                 ConfigManager.save(this, cfg, syncTmpWithRoot = false)
                 val json = ConfigManager.toJson(cfg).toString()
                 refreshRunStatusUI(animate = true)
                 launchForegroundServices(cfg)
-                toast("已开启定位漂移")
+                if (autoStartRoute) {
+                    startRoutePlaybackService()
+                } else {
+                    toast("已开启定位漂移")
+                }
 
                 if (hasRoot) {
                     RootUtils.runRootTask {
@@ -2169,11 +2596,13 @@ class MainActivity : Activity() {
 
     private fun stopDrifting() {
         isEnabled = false
+        MockLocationService.resetRoutePlaybackState()
         val cfg = buildCurrentConfig(enabled = false)
         ConfigManager.save(this, cfg, syncTmpWithRoot = false)
         val json = ConfigManager.toJson(cfg).toString()
 
         refreshRunStatusUI(animate = true)
+        refreshRoutePanelUI()
         stopService(Intent(this, MockLocationService::class.java))
         stopVpnService()
         toast("已停止定位漂移")
@@ -2239,6 +2668,12 @@ class MainActivity : Activity() {
                     ConfigManager.save(this, buildCurrentConfig(enabled = true), syncTmpWithRoot = false)
                 }
                 toast("未授予 VPN 权限")
+            }
+        } else if (requestCode == REQ_OVERLAY) {
+            if (Settings.canDrawOverlays(this)) {
+                startJoystickOverlayService()
+            } else {
+                toast("未授予悬浮窗权限")
             }
         }
     }
@@ -2888,9 +3323,23 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun onRouteChanged(pointsJson: String, totalMeters: Double) {
+            runOnUiThread {
+                val parsed = RouteManager.parsePointsJson(pointsJson)
+                activeRoutePoints = parsed
+                routeTotalMeters = totalMeters
+                RouteManager.setActiveRoutePoints(this@MainActivity, parsed)
+                refreshRoutePanelUI()
+            }
+        }
+
+        @JavascriptInterface
         fun onMapReady() {
             runOnUiThread {
                 syncMarkerToWebMap(currentGcjLat, currentGcjLng, currentAddress)
+                if (activeRoutePoints.isNotEmpty()) {
+                    syncRouteToWebMap(activeRoutePoints)
+                }
             }
         }
 

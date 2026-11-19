@@ -46,6 +46,9 @@ object ConfigManager {
     @Volatile
     private var cachedPrefsPair: Pair<SharedPreferences, Boolean>? = null
 
+    @Volatile
+    private var lastRootTmpSyncMs: Long = 0L
+
     data class DriftConfig(
         val enabled: Boolean,
         val wgsLat: Double,
@@ -140,6 +143,57 @@ object ConfigManager {
                 RootUtils.writeTmpConfigJson(json)
             }
         }
+    }
+
+    /**
+     * 高频实时移动（摇杆 / 轨迹模拟）专用轻量坐标更新：
+     * 仅更新坐标与时间戳，异步写入 Settings.Global（供 system_server 实时读取），
+     * 并对 Root 兜底文件写入进行 1.2s 节流，避免高频拉起 su 子进程。
+     */
+    fun updateLiveCoordinates(
+        context: Context,
+        wgsLat: Double,
+        wgsLng: Double,
+        gcjLat: Double,
+        gcjLng: Double,
+        address: String? = null
+    ): DriftConfig {
+        val appCtx = context.applicationContext ?: context
+        val current = load(appCtx)
+        val now = System.currentTimeMillis()
+        val updated = current.copy(
+            wgsLat = wgsLat,
+            wgsLng = wgsLng,
+            gcjLat = gcjLat,
+            gcjLng = gcjLng,
+            address = address ?: current.address,
+            updatedAt = now
+        )
+        val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
+        prefs.edit()
+            .putString(KEY_WGS_LAT, updated.wgsLat.toString())
+            .putString(KEY_WGS_LNG, updated.wgsLng.toString())
+            .putString(KEY_GCJ_LAT, updated.gcjLat.toString())
+            .putString(KEY_GCJ_LNG, updated.gcjLng.toString())
+            .putString(KEY_ADDRESS, updated.address)
+            .putLong(KEY_UPDATED_AT, now)
+            .apply()
+
+        val json = toJson(updated).toString()
+        settingsSyncExecutor.execute {
+            try {
+                Settings.Global.putString(appCtx.contentResolver, SETTINGS_GLOBAL_KEY, json)
+            } catch (_: Throwable) {
+            }
+        }
+
+        if (updated.enabled && updated.blockNetworkDrift && now - lastRootTmpSyncMs >= 1200L) {
+            lastRootTmpSyncMs = now
+            RootUtils.runRootTask {
+                RootUtils.writeTmpConfigJson(json)
+            }
+        }
+        return updated
     }
 
     fun toJson(config: DriftConfig): JSONObject {

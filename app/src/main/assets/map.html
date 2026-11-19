@@ -39,6 +39,44 @@
       background: #eff6ff;
       color: #2563eb;
     }
+    .draw-banner {
+      position: absolute;
+      top: 66px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      display: none;
+      background: rgba(37, 99, 235, 0.94);
+      color: #ffffff;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.32);
+      pointer-events: none;
+    }
+    .route-wp-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #2563eb;
+      color: #ffffff;
+      border: 2px solid #ffffff;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .route-wp-start {
+      background: #059669;
+    }
+    .route-wp-end {
+      background: #dc2626;
+    }
     .fallback-box {
       position: absolute;
       inset: 64px 14px auto 14px;
@@ -55,8 +93,10 @@
   </style>
 </head>
 <body>
+  <div id="drawBanner" class="draw-banner">轨迹绘制中：点击地图依次添加途经点</div>
+
   <div id="fallbackBox" class="fallback-box">
-    离线或地图脚本加载较慢，请检查网络，或直接点击下方「输入/粘贴坐标」手动填写经纬度。
+    离线或地图脚本加载较慢，请检查网络，或直接点击下方「输入坐标」手动填写经纬度。
   </div>
 
   <div id="map"></div>
@@ -78,6 +118,12 @@
     var map, marker, accuracyCircle, roadLayer, satLayer, isSat = false;
     var currentGcjLat = 39.908823;
     var currentGcjLng = 116.397470;
+
+    // 轨迹绘制状态
+    var isRouteDrawMode = false;
+    var routePoints = []; // [{gcjLat, gcjLng, wgsLat, wgsLng}]
+    var routePolyline = null;
+    var routeMarkers = [];
 
     var PI = Math.PI;
     var A = 6378245.0;
@@ -123,12 +169,94 @@
       return { lat: wLat, lng: wLng };
     }
 
+    function haversineMeters(lat1, lng1, lat2, lng2) {
+      var R = 6371000.0;
+      var dLat = (lat2 - lat1) * PI / 180.0;
+      var dLng = (lng2 - lng1) * PI / 180.0;
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * PI / 180.0) * Math.cos(lat2 * PI / 180.0) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+    }
+
+    function computeRouteDistance() {
+      var total = 0;
+      for (var i = 0; i < routePoints.length - 1; i++) {
+        total += haversineMeters(
+          routePoints[i].wgsLat, routePoints[i].wgsLng,
+          routePoints[i + 1].wgsLat, routePoints[i + 1].wgsLng
+        );
+      }
+      return total;
+    }
+
     function notifyNative(gcjLat, gcjLng, address) {
       currentGcjLat = gcjLat;
       currentGcjLng = gcjLng;
       var wgs = gcj02ToWgs84(gcjLat, gcjLng);
       if (window.AndroidBridge && window.AndroidBridge.onLocationPicked) {
         window.AndroidBridge.onLocationPicked(gcjLat, gcjLng, wgs.lat, wgs.lng, address || '');
+      }
+    }
+
+    function notifyRouteChanged() {
+      if (window.AndroidBridge && window.AndroidBridge.onRouteChanged) {
+        window.AndroidBridge.onRouteChanged(JSON.stringify(routePoints), computeRouteDistance());
+      }
+    }
+
+    function renderRouteOverlay() {
+      if (!map) return;
+      for (var i = 0; i < routeMarkers.length; i++) {
+        map.removeLayer(routeMarkers[i]);
+      }
+      routeMarkers = [];
+      if (routePolyline) {
+        map.removeLayer(routePolyline);
+        routePolyline = null;
+      }
+
+      if (routePoints.length === 0) return;
+
+      var latlngs = routePoints.map(function (p) { return [p.gcjLat, p.gcjLng]; });
+      if (latlngs.length >= 2) {
+        routePolyline = L.polyline(latlngs, {
+          color: '#2563eb',
+          weight: 4.5,
+          opacity: 0.88,
+          dashArray: isRouteDrawMode ? '8, 6' : null
+        }).addTo(map);
+      }
+
+      for (var idx = 0; idx < routePoints.length; idx++) {
+        (function (i) {
+          var p = routePoints[i];
+          var cls = 'route-wp-icon';
+          if (i === 0) cls += ' route-wp-start';
+          else if (i === routePoints.length - 1 && routePoints.length > 1) cls += ' route-wp-end';
+
+          var icon = L.divIcon({
+            className: '',
+            html: '<div class="' + cls + '">' + (i + 1) + '</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11]
+          });
+          var m = L.marker([p.gcjLat, p.gcjLng], {
+            icon: icon,
+            draggable: isRouteDrawMode
+          }).addTo(map);
+
+          if (isRouteDrawMode) {
+            m.on('dragend', function () {
+              var pos = m.getLatLng();
+              var wgs = gcj02ToWgs84(pos.lat, pos.lng);
+              routePoints[i] = { gcjLat: pos.lat, gcjLng: pos.lng, wgsLat: wgs.lat, wgsLng: wgs.lng };
+              renderRouteOverlay();
+              notifyRouteChanged();
+            });
+          }
+          routeMarkers.push(m);
+        })(idx);
       }
     }
 
@@ -172,6 +300,23 @@
       });
 
       map.on('click', function (e) {
+        if (isRouteDrawMode) {
+          var wgs = gcj02ToWgs84(e.latlng.lat, e.latlng.lng);
+          routePoints.push({
+            gcjLat: e.latlng.lat,
+            gcjLng: e.latlng.lng,
+            wgsLat: wgs.lat,
+            wgsLng: wgs.lng
+          });
+          if (routePoints.length === 1) {
+            marker.setLatLng(e.latlng);
+            if (accuracyCircle) accuracyCircle.setLatLng(e.latlng);
+            notifyNative(e.latlng.lat, e.latlng.lng, '轨迹起点');
+          }
+          renderRouteOverlay();
+          notifyRouteChanged();
+          return;
+        }
         marker.setLatLng(e.latlng);
         if (accuracyCircle) accuracyCircle.setLatLng(e.latlng);
         notifyNative(e.latlng.lat, e.latlng.lng, '地图点击选点');
@@ -192,6 +337,69 @@
         map.setView(ll, Math.max(map.getZoom(), 16));
       }
       notifyNative(gcjLat, gcjLng, label || '已选择位置');
+    };
+
+    window.updateLivePosition = function (gcjLat, gcjLng, panIfNeeded) {
+      currentGcjLat = gcjLat;
+      currentGcjLng = gcjLng;
+      if (map && marker) {
+        var ll = L.latLng(gcjLat, gcjLng);
+        marker.setLatLng(ll);
+        if (accuracyCircle) accuracyCircle.setLatLng(ll);
+        if (panIfNeeded && !map.getBounds().pad(-0.15).contains(ll)) {
+          map.panTo(ll, { animate: true, duration: 0.25 });
+        }
+      }
+    };
+
+    window.setRouteDrawMode = function (enabled) {
+      isRouteDrawMode = !!enabled;
+      var banner = document.getElementById('drawBanner');
+      if (banner) {
+        banner.style.display = isRouteDrawMode ? 'block' : 'none';
+      }
+      renderRouteOverlay();
+    };
+
+    window.undoRoutePoint = function () {
+      if (routePoints.length > 0) {
+        routePoints.pop();
+        renderRouteOverlay();
+        notifyRouteChanged();
+      }
+    };
+
+    window.clearRoute = function () {
+      routePoints = [];
+      renderRouteOverlay();
+      notifyRouteChanged();
+    };
+
+    window.loadRoutePoints = function (rawJson) {
+      try {
+        var parsed = JSON.parse(rawJson);
+        if (!Array.isArray(parsed)) return;
+        routePoints = parsed.map(function (p) {
+          var wgs = (typeof p.wgsLat === 'number' && typeof p.wgsLng === 'number')
+            ? { lat: p.wgsLat, lng: p.wgsLng }
+            : gcj02ToWgs84(p.gcjLat, p.gcjLng);
+          return {
+            gcjLat: p.gcjLat,
+            gcjLng: p.gcjLng,
+            wgsLat: wgs.lat,
+            wgsLng: wgs.lng
+          };
+        });
+        renderRouteOverlay();
+        if (map && routePoints.length >= 2) {
+          var bounds = L.latLngBounds(routePoints.map(function (p) { return [p.gcjLat, p.gcjLng]; }));
+          map.fitBounds(bounds, { padding: [48, 48], maxZoom: 17 });
+        } else if (map && routePoints.length === 1) {
+          map.setView([routePoints[0].gcjLat, routePoints[0].gcjLng], Math.max(map.getZoom(), 16));
+        }
+        notifyRouteChanged();
+      } catch (e) {
+      }
     };
 
     function toggleLayer() {
