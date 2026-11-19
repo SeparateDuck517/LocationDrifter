@@ -49,10 +49,12 @@ object SidebarController {
                     panel.resources.displayMetrics
                 )
             scrim.visibility = View.VISIBLE
+            scrim.bringToFront()
             scrim.alpha = 0f
             scrim.animate().alpha(1f).setDuration(200L).start()
 
             panel.visibility = View.VISIBLE
+            panel.bringToFront()
             panel.translationX = -width
             panel.animate()
                 .translationX(0f)

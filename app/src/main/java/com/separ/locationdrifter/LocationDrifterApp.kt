@@ -22,6 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.data.RouteManager
+import java.util.WeakHashMap
 
 /**
  * 全局应用入口：负责初始化自定义速度/海拔配置、夜间模式（跟随系统 / 夜间 / 浅色）、
@@ -66,6 +67,8 @@ class LocationDrifterApp : Application() {
         private val DARK_DIVIDER_COLOR = Color.parseColor("#334155")
     }
 
+    private val wiredActivities = WeakHashMap<Activity, Boolean>()
+
     override fun onCreate() {
         super.onCreate()
         RouteManager.initCustomSpeeds(this)
@@ -87,23 +90,18 @@ class LocationDrifterApp : Application() {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                     applyLegacyNightConfigIfNeeded(activity, mode)
                 }
-                val dark = isDarkActive(activity, mode)
-                applySystemBars(activity, dark)
-                wireThemeControls(activity, mode)
-                SidebarController.attach(
-                    activity = activity,
-                    getThemeMode = { getSavedThemeMode(activity) },
-                    onApplyThemeMode = { targetMode -> switchThemeMode(activity, targetMode) }
-                )
-                syncWebMapTheme(activity, dark)
-                if (dark) {
-                    attachDarkModeAdapter(activity)
-                }
             }
 
-            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityPostCreated(activity: Activity, savedInstanceState: Bundle?) {
+                ensureActivityWired(activity)
+            }
+
+            override fun onActivityStarted(activity: Activity) {
+                ensureActivityWired(activity)
+            }
 
             override fun onActivityResumed(activity: Activity) {
+                ensureActivityWired(activity)
                 val mode = getSavedThemeMode(activity)
                 val dark = isDarkActive(activity, mode)
                 applySystemBars(activity, dark)
@@ -114,8 +112,35 @@ class LocationDrifterApp : Application() {
             override fun onActivityPaused(activity: Activity) = Unit
             override fun onActivityStopped(activity: Activity) = Unit
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-            override fun onActivityDestroyed(activity: Activity) = Unit
+            override fun onActivityDestroyed(activity: Activity) {
+                wiredActivities.remove(activity)
+            }
         })
+    }
+
+    /**
+     * 必须在 Activity.setContentView() 之后挂载侧边栏、主题开关与深色适配：
+     * onActivityCreated 发生在 super.onCreate() 内，此时布局尚未加载；
+     * 因此统一在 onActivityPostCreated / onActivityStarted 中幂等初始化。
+     */
+    private fun ensureActivityWired(activity: Activity) {
+        if (wiredActivities[activity] == true) return
+        if (activity.findViewById<View>(R.id.rootMainLayout) == null) return
+        wiredActivities[activity] = true
+
+        val mode = getSavedThemeMode(activity)
+        val dark = isDarkActive(activity, mode)
+        applySystemBars(activity, dark)
+        wireThemeControls(activity, mode)
+        SidebarController.attach(
+            activity = activity,
+            getThemeMode = { getSavedThemeMode(activity) },
+            onApplyThemeMode = { targetMode -> switchThemeMode(activity, targetMode) }
+        )
+        syncWebMapTheme(activity, dark)
+        if (dark) {
+            attachDarkModeAdapter(activity)
+        }
     }
 
     private fun getSavedThemeMode(context: Context): Int {
