@@ -26,7 +26,7 @@ import java.util.WeakHashMap
 
 /**
  * 全局应用入口：负责初始化自定义速度/海拔配置、夜间模式（跟随系统 / 夜间 / 浅色）、
- * 侧边栏与设置/关于页面挂载、系统栏着色及暗色地图同步。
+ * 侧边栏与设置/关于页面挂载、系统栏着色、暗色地图同步及所有弹窗深色适配。
  */
 class LocationDrifterApp : Application() {
 
@@ -42,7 +42,7 @@ class LocationDrifterApp : Application() {
             Color.parseColor("#0F172A") to Color.parseColor("#F1F5F9"),
             Color.parseColor("#1E293B") to Color.parseColor("#E2E8F0"),
             Color.parseColor("#334155") to Color.parseColor("#CBD5E1"),
-            Color.parseColor("#475569") to Color.parseColor("#94A3B8"),
+            Color.parseColor("#475569") to Color.parseColor("#CBD5E1"),
             Color.parseColor("#64748B") to Color.parseColor("#94A3B8"),
             Color.parseColor("#1D4ED8") to Color.parseColor("#93C5FD"),
             Color.parseColor("#2563EB") to Color.parseColor("#60A5FA"),
@@ -58,7 +58,7 @@ class LocationDrifterApp : Application() {
             Color.parseColor("#ECFDF5") to (Color.parseColor("#064E3B") to Color.parseColor("#059669")),
             Color.parseColor("#FEF2F2") to (Color.parseColor("#450A0A") to Color.parseColor("#991B1B")),
             Color.parseColor("#FFFBEB") to (Color.parseColor("#451A03") to Color.parseColor("#92400E")),
-            Color.parseColor("#EFF6FF") to (Color.parseColor("#172554") to Color.parseColor("#1E40AF")),
+            Color.parseColor("#EFF6FF") to (Color.parseColor("#172554") to Color.parseColor("#3B82F6")),
             Color.parseColor("#F8FAFC") to (Color.parseColor("#1E293B") to Color.parseColor("#334155")),
             Color.parseColor("#F1F5F9") to (Color.parseColor("#1E293B") to Color.parseColor("#334155"))
         )
@@ -68,6 +68,7 @@ class LocationDrifterApp : Application() {
     }
 
     private val wiredActivities = WeakHashMap<Activity, Boolean>()
+    private val adaptedDialogRoots = WeakHashMap<View, Boolean>()
 
     override fun onCreate() {
         super.onCreate()
@@ -305,11 +306,59 @@ class LocationDrifterApp : Application() {
             }
             val candidates = activity.findViewById<LinearLayout>(R.id.candidatesList)
             if (candidates != null && candidates.childCount > 0) {
-                remapSubtreeForDark(candidates)
+                remapSubtreeForDark(candidates, strokePx)
             }
             true
         }
         root.viewTreeObserver.addOnPreDrawListener(listener)
+
+        // 监听弹窗弹出（主窗口失焦时扫描当前进程内的所有 AlertDialog 窗口并自动深色适配）
+        val decor = activity.window?.decorView
+        decor?.viewTreeObserver?.addOnWindowFocusChangeListener { hasFocus ->
+            if (!hasFocus && !activity.isFinishing && !activity.isDestroyed) {
+                scanAndAdaptDialogs(activity, strokePx)
+                decor.postDelayed({
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        scanAndAdaptDialogs(activity, strokePx)
+                    }
+                }, 100L)
+            }
+        }
+        decor?.postDelayed({
+            if (!activity.isFinishing && !activity.isDestroyed) {
+                scanAndAdaptDialogs(activity, strokePx)
+            }
+        }, 300L)
+    }
+
+    private fun scanAndAdaptDialogs(activity: Activity, strokePx: Int) {
+        val dialogRoots = findForeignWindowRoots(activity)
+        for (dialogRoot in dialogRoots) {
+            if (dialogRoot is ViewGroup) {
+                remapSubtreeForDark(dialogRoot, strokePx)
+                if (adaptedDialogRoots[dialogRoot] != true) {
+                    adaptedDialogRoots[dialogRoot] = true
+                    dialogRoot.viewTreeObserver.addOnPreDrawListener {
+                        remapSubtreeForDark(dialogRoot, strokePx)
+                        true
+                    }
+                }
+            }
+        }
+    }
+
+    private fun findForeignWindowRoots(activity: Activity): List<View> {
+        return try {
+            val wmgClass = Class.forName("android.view.WindowManagerGlobal")
+            val instance = wmgClass.getMethod("getInstance").invoke(null) ?: return emptyList()
+            val viewsField = wmgClass.getDeclaredField("mViews")
+            viewsField.isAccessible = true
+            val raw = viewsField.get(instance) as? List<*> ?: return emptyList()
+            val mainDecor = activity.window?.decorView
+            raw.mapNotNull { it as? View }.filter { it !== mainDecor }
+        } catch (_: Throwable) {
+            emptyList()
+        }
     }
 
     private fun remapTextViewColor(tv: TextView) {
@@ -320,20 +369,22 @@ class LocationDrifterApp : Application() {
         }
     }
 
-    private fun remapPillBackground(tv: TextView, strokePx: Int) {
-        val bg = tv.background as? GradientDrawable ?: return
+    private fun remapPillBackground(view: View, strokePx: Int) {
+        val bg = view.background as? GradientDrawable ?: return
         val curColor = bg.color?.defaultColor ?: return
         val mapped = LIGHT_TO_DARK_PILL[curColor] ?: return
         bg.setColor(mapped.first)
         bg.setStroke(strokePx, mapped.second)
     }
 
-    private fun remapSubtreeForDark(group: ViewGroup) {
+    private fun remapSubtreeForDark(group: ViewGroup, strokePx: Int) {
+        remapPillBackground(group, strokePx)
         for (i in 0 until group.childCount) {
             val child = group.getChildAt(i)
+            remapPillBackground(child, strokePx)
             when (child) {
                 is TextView -> remapTextViewColor(child)
-                is ViewGroup -> remapSubtreeForDark(child)
+                is ViewGroup -> remapSubtreeForDark(child, strokePx)
                 else -> {
                     val bg = child.background as? ColorDrawable
                     if (bg != null && bg.color == LIGHT_DIVIDER_COLOR) {
