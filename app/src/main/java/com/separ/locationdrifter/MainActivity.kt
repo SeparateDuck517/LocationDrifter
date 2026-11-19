@@ -208,6 +208,7 @@ class MainActivity : Activity() {
     private lateinit var cbAntiDrift: CheckBox
     private lateinit var cbIptables: CheckBox
     private lateinit var cbVpn: CheckBox
+    private lateinit var cbStepSim: CheckBox
 
     private lateinit var btnFavorites: Button
     private lateinit var btnToggleDrift: Button
@@ -551,6 +552,7 @@ class MainActivity : Activity() {
         cbAntiDrift = findViewById(R.id.cbAntiDrift)
         cbIptables = findViewById(R.id.cbIptables)
         cbVpn = findViewById(R.id.cbVpn)
+        cbStepSim = findViewById(R.id.cbStepSim)
 
         btnFavorites = findViewById(R.id.btnFavorites)
         btnToggleDrift = findViewById(R.id.btnToggleDrift)
@@ -781,7 +783,6 @@ class MainActivity : Activity() {
         RouteManager.setActiveRouteSpeed(this, routeSpeedMps)
         RouteManager.setActiveLoopMode(this, routeLoopMode)
 
-        // 若尚未开启定位漂移，自动同步起点并启动漂移服务
         if (!isEnabled) {
             val first = activeRoutePoints.first()
             applyPickedLocation(first.gcjLat, first.gcjLng, first.wgsLat, first.wgsLng, "轨迹起点")
@@ -852,9 +853,9 @@ class MainActivity : Activity() {
     }
 
     private fun refreshStrategyToggleBadge() {
-        val checkedCount = listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn).count { it.isChecked }
+        val checkedCount = listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn, cbStepSim).count { it.isChecked }
         val arrow = if (isStrategyExpanded) "▴" else "▾"
-        btnToggleOptions.text = "策略 $checkedCount/4 $arrow"
+        btnToggleOptions.text = "策略 $checkedCount/5 $arrow"
         btnToggleOptions.setTextColor(
             Color.parseColor(if (isStrategyExpanded) "#1D4ED8" else "#475569")
         )
@@ -1164,6 +1165,10 @@ class MainActivity : Activity() {
                 return@OnCheckedChangeListener
             }
 
+            if (buttonView.id == R.id.cbStepSim && isChecked) {
+                toast("已开启实验性步数模拟（零三方注入：步行/跑步自动计步，骑行默认不计步）")
+            }
+
             if (isEnabled) {
                 applyUpdatedCoordinates(showToast = false)
             } else {
@@ -1173,6 +1178,8 @@ class MainActivity : Activity() {
         val lockedTouchExplain = View.OnTouchListener { v, event ->
             if (!v.isEnabled && event.action == MotionEvent.ACTION_UP) {
                 val reason = when {
+                    v.id == R.id.cbStepSim ->
+                        "「步数模拟(实验性)」通过 system_server 零注入拦截传感器服务，仅 Root + LSPosed 完整模式可用"
                     v.id == R.id.cbIptables ->
                         "「内核阻断」需 Root，免 Root 请使用「VPN阻断」"
                     selectedMode == WorkMode.ROOT_LSPOSED && hasXposed && !hasSystemHookActive ->
@@ -1196,7 +1203,7 @@ class MainActivity : Activity() {
             listener.onCheckedChanged(buttonView, isChecked)
             refreshStrategyToggleBadge()
         }
-        for (box in listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn)) {
+        for (box in listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn, cbStepSim)) {
             box.setOnCheckedChangeListener(wrappedListener)
             box.setOnTouchListener(lockedTouchExplain)
         }
@@ -1238,6 +1245,7 @@ class MainActivity : Activity() {
         cbSystemMock.isChecked = cfg.enableSystemMock
         cbAntiDrift.isChecked = cfg.blockNetworkDrift
         cbIptables.isChecked = cfg.enableIptables
+        cbStepSim.isChecked = cfg.enableStepSim
 
         val migratedV2 = uiPrefs.getBoolean(KEY_VPN_DEFAULT_MIGRATED_V2, false)
         if (!migratedV2 && (selectedMode == WorkMode.SHIZUKU || selectedMode == WorkMode.ROOTLESS_BASIC)) {
@@ -1278,6 +1286,12 @@ class MainActivity : Activity() {
                 )
                 setCheckboxState(cbIptables, enabled = hasRoot, checked = hasRoot, label = "内核阻断")
                 setCheckboxState(cbVpn, enabled = true, checked = false, label = "VPN阻断")
+                setCheckboxState(
+                    cbStepSim,
+                    enabled = hasRoot && hasSystemHookActive,
+                    checked = false,
+                    label = if (hasRoot && hasSystemHookActive) "步数模拟(实验性·步行/跑步)" else "步数模拟(实验性·需LSPosed)"
+                )
             }
             WorkMode.SHIZUKU -> {
                 val hasTargets = ShizukuHelper.getTargetApps(this).isNotEmpty()
@@ -1295,12 +1309,14 @@ class MainActivity : Activity() {
                     label = "自动关扫描"
                 )
                 setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
+                setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·需Root+LSPosed)")
             }
             WorkMode.ROOTLESS_BASIC -> {
                 setCheckboxState(cbSystemMock, enabled = true, checked = true, label = "系统GPS注入")
                 setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                 setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
                 setCheckboxState(cbVpn, enabled = true, checked = true, label = "VPN阻断(推荐)")
+                setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·需Root+LSPosed)")
             }
         }
         ConfigManager.save(this, buildCurrentConfig(enabled = false), syncTmpWithRoot = false)
@@ -1466,6 +1482,7 @@ class MainActivity : Activity() {
                     setCheckboxState(cbAntiDrift, enabled = true, label = "防基站/WiFi漂移")
                     setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
                     setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
+                    setCheckboxState(cbStepSim, enabled = true, label = "步数模拟(实验性·步行/跑步)")
                 } else if (hasRoot && hasXposed && !hasSystemHookActive) {
                     tvSubtitleMode.text = "LSPosed 已开启 · 重启后生效"
                     tvXposedStatus.text = "LSPosed: 待重启 ›"
@@ -1480,6 +1497,7 @@ class MainActivity : Activity() {
                     setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(待重启)")
                     setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
                     setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
+                    setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·待重启)")
                 } else if (hasRoot && !hasXposed) {
                     tvSubtitleMode.text = "Root 已就绪 · 待激活 LSPosed"
                     tvXposedStatus.text = "LSPosed: 未激活 ›"
@@ -1494,6 +1512,7 @@ class MainActivity : Activity() {
                     setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                     setCheckboxState(cbIptables, enabled = true, label = "内核阻断")
                     setCheckboxState(cbVpn, enabled = true, label = "VPN阻断")
+                    setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·需LSPosed)")
                 } else {
                     tvSubtitleMode.text = "未获取 Root · 可切换免 Root 模式"
                     tvXposedStatus.text = "Root: 未获取 ›"
@@ -1508,6 +1527,7 @@ class MainActivity : Activity() {
                     setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                     setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
                     setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
+                    setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·需Root+LSPosed)")
                 }
             }
 
@@ -1578,6 +1598,7 @@ class MainActivity : Activity() {
                     label = "自动关扫描"
                 )
                 setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
+                setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·需Root+LSPosed)")
             }
 
             WorkMode.ROOTLESS_BASIC -> {
@@ -1605,6 +1626,7 @@ class MainActivity : Activity() {
                 setCheckboxState(cbAntiDrift, enabled = false, checked = false, label = "防基站(需LSPosed)")
                 setCheckboxState(cbIptables, enabled = false, checked = false, label = "内核阻断(需Root)")
                 setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
+                setCheckboxState(cbStepSim, enabled = false, checked = false, label = "步数模拟(实验性·需Root+LSPosed)")
             }
         }
         refreshStrategyToggleBadge()
@@ -2716,6 +2738,8 @@ class MainActivity : Activity() {
     private fun buildCurrentConfig(enabled: Boolean): ConfigManager.DriftConfig {
         val allowIptables = selectedMode == WorkMode.ROOT_LSPOSED && cbIptables.isChecked && hasRoot
         val allowAntiDrift = selectedMode == WorkMode.ROOT_LSPOSED && cbAntiDrift.isChecked && hasSystemHookActive
+        val allowStepSim = selectedMode == WorkMode.ROOT_LSPOSED && cbStepSim.isChecked && hasRoot && hasSystemHookActive
+        val currentSteps = ConfigManager.load(this).simStepCount
         return ConfigManager.DriftConfig(
             enabled = enabled,
             wgsLat = currentWgsLat,
@@ -2728,7 +2752,9 @@ class MainActivity : Activity() {
             enableIptables = allowIptables,
             enableVpn = cbVpn.isChecked,
             enableJitter = true,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            enableStepSim = allowStepSim,
+            simStepCount = currentSteps
         )
     }
 

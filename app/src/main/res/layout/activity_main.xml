@@ -626,7 +626,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 可折叠 2x2 防漂移策略面板（默认收起，释放地图空间） -->
+        <!-- 可折叠防漂移与实验性策略面板（默认收起，释放地图空间） -->
         <LinearLayout
             android:id="@+id/strategyOptionsPanel"
             android:layout_width="match_parent"
@@ -717,6 +717,23 @@
                     android:textColor="#1E293B"
                     android:textSize="12sp" />
             </LinearLayout>
+
+            <CheckBox
+                android:id="@+id/cbStepSim"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_chip_toggle"
+                android:buttonTint="#D97706"
+                android:checked="false"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:paddingStart="6dp"
+                android:paddingEnd="8dp"
+                android:singleLine="true"
+                android:text="步数模拟(实验性·步行/跑步)"
+                android:textColor="#1E293B"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <!-- 一键启停主操作行 -->

@@ -409,6 +409,10 @@ class JoystickOverlayService : Service() {
         )
         if (newWgsLat == cfg.wgsLat && newWgsLng == cfg.wgsLng) return
 
+        val stepDist = RouteManager.haversineMeters(cfg.wgsLat, cfg.wgsLng, newWgsLat, newWgsLng)
+        if (stepDist > 0.0) {
+            ConfigManager.accumulateSimulatedSteps(this, stepDist, speedMps)
+        }
         val newGcj = CoordTransform.wgs84ToGcj02(newWgsLat, newWgsLng)
         val locked = isDirectionLockEnabled && (joystickPad?.isDirectionLockedActive == true)
         val label = if (locked) "摇杆锁定巡航中" else "摇杆移动中"

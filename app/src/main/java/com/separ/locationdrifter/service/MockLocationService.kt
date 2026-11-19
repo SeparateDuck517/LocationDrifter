@@ -395,6 +395,10 @@ class MockLocationService : Service() {
         routeTraveledMeters = nextDist
         val sample = RouteManager.sampleAlongRoute(points, nextDist, routeReverse) ?: return currentCfg
 
+        val stepDist = (speed * dtSec).coerceAtLeast(0.0)
+        if (!finished && stepDist > 0.0) {
+            ConfigManager.accumulateSimulatedSteps(this, stepDist, speed)
+        }
         val label = if (finished) "已到达轨迹终点" else "轨迹模拟中"
         val updated = ConfigManager.updateLiveCoordinates(
             this,

@@ -39,6 +39,10 @@ import kotlin.random.Random
 /**
  * LSPosed / Xposed 入口（严格遵守「零三方应用注入」架构）：
  * 作用域仅限系统框架 (android) 与电话服务 (com.android.phone)，绝不向任何第三方业务应用注入 Hook 代码。
+ * - 定位与 GNSS 卫星注入：拦截 system_server 位置服务并抹除 Mock 标记；
+ * - 基站 / Wi-Fi 源头隔离：拦截 WifiServiceImpl、ParceledListSlice、WifiInfo 与 NetworkRegistrationInfo；
+ * - 实验性步数模拟（默认关闭）：仅在用户主动开启时，在 system_server 进程内懒加载 Native Hook 拦截 libsensorservice.so，
+ *   并内置启动崩溃熔断保护。
  */
 class LocationHookEntry : IXposedHookLoadPackage {
 
@@ -73,7 +77,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
         val wgsLat: Double = 39.907418,
         val wgsLng: Double = 116.391227,
         val blockNetworkDrift: Boolean = true,
-        val enableJitter: Boolean = true
+        val enableJitter: Boolean = true,
+        val enableStepSim: Boolean = false,
+        val simStepCount: Long = 0L
     )
 
     private data class TrackedListener(
@@ -109,6 +115,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
 
     private val wifiApexHooked = AtomicBoolean(false)
     private val feederStarted = AtomicBoolean(false)
+    private val nativeStepInitAttempted = AtomicBoolean(false)
     private val activeListeners = ConcurrentHashMap<IBinder, TrackedListener>()
     private val activePendingIntents = ConcurrentHashMap<PendingIntent, TrackedPendingIntent>()
     private val uidBypassCache = ConcurrentHashMap<Int, Boolean>()
@@ -177,13 +184,7 @@ class LocationHookEntry : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 精准提取真实 LocationProvider 名称（gps / network / fused / passive）：
-     * 避免 Android 12–16 中 getLastLocation(LocationRequest, packageName, attributionTag)
-     * 误将调用方包名 (如 com.tencent.mm) 当作 provider 导致 SDK 拒收坐标。
-     */
     private fun resolveProviderName(param: XC_MethodHook.MethodHookParam): String {
-        // 1. 若宿主对象为 LocationProviderManager，直接读取其 mName 字段
         try {
             val target = param.thisObject
             if (target != null && target.javaClass.name.contains("LocationProviderManager")) {
@@ -195,7 +196,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
         } catch (_: Throwable) {
         }
 
-        // 2. 若参数列表包含 android.location.LocationRequest，调用其 getProvider()
         for (arg in param.args) {
             if (arg != null && arg.javaClass.name == "android.location.LocationRequest") {
                 try {
@@ -208,7 +208,6 @@ class LocationHookEntry : IXposedHookLoadPackage {
             }
         }
 
-        // 3. 仅接受合法 Provider 名称字符串
         for (arg in param.args) {
             if (arg is String && arg in KNOWN_PROVIDERS) {
                 return arg
@@ -276,9 +275,58 @@ class LocationHookEntry : IXposedHookLoadPackage {
         hookWifiServiceInSystemServer(wifiClassLoader)
     }
 
-    /**
-     * 在 system_server 内持续向已注册的 ILocationListener 与 PendingIntent 推送虚拟 GPS 坐标（1Hz 心跳）
-     */
+    private fun ensureNativeStepHookOnce(ctx: Context) {
+        if (!nativeStepInitAttempted.compareAndSet(false, true)) return
+        Thread {
+            val cr = ctx.contentResolver
+            val currentBoot = try {
+                Settings.Global.getInt(cr, Settings.Global.BOOT_COUNT, 0)
+            } catch (_: Throwable) {
+                0
+            }
+            val prevGuard = try {
+                Settings.Global.getString(cr, ConfigManager.SETTINGS_GLOBAL_STEP_GUARD_KEY)
+            } catch (_: Throwable) {
+                null
+            }
+            if (prevGuard != null && prevGuard.startsWith("loading:") && prevGuard != "loading:$currentBoot") {
+                XposedBridge.log("$TAG step native hook circuit-breaker tripped (prevGuard=$prevGuard)")
+                return@Thread
+            }
+            try {
+                Settings.Global.putString(cr, ConfigManager.SETTINGS_GLOBAL_STEP_GUARD_KEY, "loading:$currentBoot")
+            } catch (_: Throwable) {
+            }
+
+            try {
+                val appInfo = ctx.packageManager.getApplicationInfo(MODULE_PACKAGE, 0)
+                val nativeLibDir = appInfo.nativeLibraryDir
+                val ret = NativeStepBridge.ensureLoadedAndHooked(nativeLibDir)
+                val status = NativeStepBridge.getStatusSafe()
+                val mark = if (ret == 0) "ready:$currentBoot:$status" else "failed:$ret:$status"
+                try {
+                    Settings.Global.putString(cr, ConfigManager.SETTINGS_GLOBAL_STEP_GUARD_KEY, mark)
+                } catch (_: Throwable) {
+                }
+                XposedBridge.log("$TAG native step hook result=$ret status=$status")
+            } catch (t: Throwable) {
+                try {
+                    Settings.Global.putString(
+                        cr,
+                        ConfigManager.SETTINGS_GLOBAL_STEP_GUARD_KEY,
+                        "error:${t.javaClass.simpleName}"
+                    )
+                } catch (_: Throwable) {
+                }
+                XposedBridge.log("$TAG native step hook exception: ${t.message}")
+            }
+        }.apply {
+            name = "LocationDrifter-StepNativeLoader"
+            isDaemon = true
+            start()
+        }
+    }
+
     private fun startSystemGpsFeederLoop() {
         if (!feederStarted.compareAndSet(false, true)) return
         Thread {
@@ -286,6 +334,14 @@ class LocationHookEntry : IXposedHookLoadPackage {
                 try {
                     Thread.sleep(FEED_INTERVAL_MS)
                     val cfg = getConfig()
+
+                    if (cfg.enabled && cfg.enableStepSim) {
+                        resolveContext()?.let { ensureNativeStepHookOnce(it) }
+                        NativeStepBridge.updateStateSafe(true, cfg.simStepCount)
+                    } else {
+                        NativeStepBridge.updateStateSafe(false, 0L)
+                    }
+
                     if (!cfg.enabled) continue
 
                     if (activeListeners.isNotEmpty()) {
@@ -470,7 +526,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
                 wgsLat = obj.optDouble(ConfigManager.KEY_WGS_LAT, cachedConfig.wgsLat),
                 wgsLng = obj.optDouble(ConfigManager.KEY_WGS_LNG, cachedConfig.wgsLng),
                 blockNetworkDrift = obj.optBoolean(ConfigManager.KEY_BLOCK_NETWORK_DRIFT, true),
-                enableJitter = obj.optBoolean(ConfigManager.KEY_JITTER, true)
+                enableJitter = obj.optBoolean(ConfigManager.KEY_JITTER, true),
+                enableStepSim = obj.optBoolean(ConfigManager.KEY_ENABLE_STEP_SIM, false),
+                simStepCount = obj.optLong(ConfigManager.KEY_SIM_STEP_COUNT, 0L)
             )
         } catch (_: Throwable) {
             null
@@ -522,7 +580,9 @@ class LocationHookEntry : IXposedHookLoadPackage {
                         wgsLng = prefs.getString(ConfigManager.KEY_WGS_LNG, null)?.toDoubleOrNull()
                             ?: cachedConfig.wgsLng,
                         blockNetworkDrift = prefs.getBoolean(ConfigManager.KEY_BLOCK_NETWORK_DRIFT, true),
-                        enableJitter = prefs.getBoolean(ConfigManager.KEY_JITTER, true)
+                        enableJitter = prefs.getBoolean(ConfigManager.KEY_JITTER, true),
+                        enableStepSim = prefs.getBoolean(ConfigManager.KEY_ENABLE_STEP_SIM, false),
+                        simStepCount = prefs.getLong(ConfigManager.KEY_SIM_STEP_COUNT, 0L)
                     )
                     return cachedConfig
                 } else {
