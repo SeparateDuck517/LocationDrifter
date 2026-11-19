@@ -409,7 +409,7 @@ class JoystickOverlayService : Service() {
         )
         if (newWgsLat == cfg.wgsLat && newWgsLng == cfg.wgsLng) return
 
-        val stepDist = RouteManager.haversineMeters(cfg.wgsLat, cfg.wgsLng, newWgsLat, newWgsLng)
+        val stepDist = RouteManager.distanceMeters(cfg.wgsLat, cfg.wgsLng, newWgsLat, newWgsLng)
         if (stepDist > 0.0) {
             ConfigManager.accumulateSimulatedSteps(this, stepDist, speedMps)
         }
