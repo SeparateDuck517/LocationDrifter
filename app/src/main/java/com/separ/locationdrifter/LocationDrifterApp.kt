@@ -20,10 +20,12 @@ import android.webkit.WebView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import com.separ.locationdrifter.data.ConfigManager
+import com.separ.locationdrifter.data.RouteManager
 
 /**
- * 全局应用入口：负责夜间模式（跟随系统 / 夜间 / 浅色）状态持久化、
- * 系统栏着色、WebView 地图暗色同步及动态胶囊/列表深色适配。
+ * 全局应用入口：负责初始化自定义速度/海拔配置、夜间模式（跟随系统 / 夜间 / 浅色）、
+ * 侧边栏与设置/关于页面挂载、系统栏着色及暗色地图同步。
  */
 class LocationDrifterApp : Application() {
 
@@ -66,6 +68,9 @@ class LocationDrifterApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        RouteManager.initCustomSpeeds(this)
+        ConfigManager.getAltitude(this)
+
         val savedMode = getSavedThemeMode(this)
         applyPlatformNightMode(savedMode)
 
@@ -85,6 +90,11 @@ class LocationDrifterApp : Application() {
                 val dark = isDarkActive(activity, mode)
                 applySystemBars(activity, dark)
                 wireThemeControls(activity, mode)
+                SidebarController.attach(
+                    activity = activity,
+                    getThemeMode = { getSavedThemeMode(activity) },
+                    onApplyThemeMode = { targetMode -> switchThemeMode(activity, targetMode) }
+                )
                 syncWebMapTheme(activity, dark)
                 if (dark) {
                     attachDarkModeAdapter(activity)
@@ -118,6 +128,22 @@ class LocationDrifterApp : Application() {
             .edit()
             .putInt(KEY_THEME_MODE, mode)
             .commit()
+    }
+
+    private fun switchThemeMode(activity: Activity, targetMode: Int) {
+        saveThemeMode(activity, targetMode)
+        updateThemeToggleLabel(activity, targetMode)
+        val label = when (targetMode) {
+            THEME_MODE_DARK -> "已切换：夜间模式"
+            THEME_MODE_LIGHT -> "已切换：浅色模式"
+            else -> "已切换：跟随系统"
+        }
+        Toast.makeText(activity, label, Toast.LENGTH_SHORT).show()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            applyPlatformNightMode(targetMode)
+        } else {
+            activity.recreate()
+        }
     }
 
     private fun applyPlatformNightMode(mode: Int) {
@@ -190,9 +216,9 @@ class LocationDrifterApp : Application() {
     private fun updateThemeToggleLabel(activity: Activity, mode: Int) {
         val btn = activity.findViewById<TextView>(R.id.btnThemeToggle) ?: return
         btn.text = when (mode) {
-            THEME_MODE_DARK -> "🌙"
-            THEME_MODE_LIGHT -> "☀"
-            else -> "◐"
+            THEME_MODE_DARK -> "🌙 夜间模式：已开启"
+            THEME_MODE_LIGHT -> "☀ 夜间模式：浅色"
+            else -> "◐ 夜间模式：跟随系统"
         }
     }
 
@@ -207,19 +233,7 @@ class LocationDrifterApp : Application() {
                 THEME_MODE_DARK -> THEME_MODE_LIGHT
                 else -> THEME_MODE_SYSTEM
             }
-            saveThemeMode(activity, nextMode)
-            updateThemeToggleLabel(activity, nextMode)
-            val label = when (nextMode) {
-                THEME_MODE_DARK -> "已切换：夜间模式"
-                THEME_MODE_LIGHT -> "已切换：浅色模式"
-                else -> "已切换：跟随系统"
-            }
-            Toast.makeText(activity, label, Toast.LENGTH_SHORT).show()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                applyPlatformNightMode(nextMode)
-            } else {
-                activity.recreate()
-            }
+            switchThemeMode(activity, nextMode)
         }
     }
 

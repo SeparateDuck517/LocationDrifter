@@ -1,175 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/rootMainLayout"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drawerRootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg_canvas"
-    android:orientation="vertical">
+    android:background="@color/bg_canvas">
 
-    <!-- 顶部状态栏 -->
+    <!-- 主界面内容（大幅精简，突出地图视野） -->
     <LinearLayout
+        android:id="@+id/rootMainLayout"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@color/surface_header"
-        android:elevation="3dp"
-        android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingTop="12dp"
-        android:paddingEnd="16dp"
-        android:paddingBottom="11dp">
+        android:layout_height="match_parent"
+        android:background="@color/bg_canvas"
+        android:orientation="vertical">
 
+        <!-- 极简单行顶部栏：菜单按钮 + 标题 + 运行状态胶囊 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:letterSpacing="0.01"
-                    android:text="定位漂移助手"
-                    android:textColor="@color/text_primary"
-                    android:textSize="17sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvSubtitleMode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:text="系统级防漂移 · 零三方注入"
-                    android:textColor="@color/text_muted"
-                    android:textSize="11sp" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/btnThemeToggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:background="@drawable/bg_status_pill"
-                android:paddingStart="8dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="5dp"
-                android:text="◐"
-                android:textColor="@color/text_secondary"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/btnSwitchMode"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:background="@drawable/bg_btn_secondary"
-                android:paddingStart="8dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="5dp"
-                android:text="切换模式"
-                android:textColor="@color/accent_blue_text"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/btnHelpGuide"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:background="@drawable/bg_btn_secondary"
-                android:paddingStart="10dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="10dp"
-                android:paddingBottom="5dp"
-                android:text="指引"
-                android:textColor="@color/accent_blue_text"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/tvRunStatus"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_status_pill"
-                android:paddingStart="10dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="10dp"
-                android:paddingBottom="5dp"
-                android:text="● 未开启"
-                android:textColor="@color/text_muted"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="9dp"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/tvRootStatus"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:background="@drawable/bg_status_pill"
-                android:ellipsize="end"
-                android:gravity="center"
-                android:maxLines="1"
-                android:paddingStart="8dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="5dp"
-                android:text="模式: 检测中..."
-                android:textColor="@color/text_secondary"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/tvXposedStatus"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_status_pill"
-                android:ellipsize="end"
-                android:gravity="center"
-                android:maxLines="1"
-                android:paddingStart="8dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="5dp"
-                android:text="权限: 检测中..."
-                android:textColor="@color/text_secondary"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <!-- 状态提示横幅 -->
-        <LinearLayout
-            android:id="@+id/cardDegradedBanner"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="9dp"
-            android:background="@drawable/bg_warning_card"
-            android:clickable="true"
-            android:focusable="true"
+            android:background="@color/surface_header"
+            android:elevation="3dp"
             android:orientation="vertical"
-            android:paddingStart="12dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="8dp"
-            android:visibility="gone">
+            android:paddingStart="14dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="10dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -178,612 +32,951 @@
                 android:orientation="horizontal">
 
                 <TextView
-                    android:id="@+id/tvDegradedTitle"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="模式已就绪"
-                    android:textColor="@color/warning_title"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/btnDegradedAction"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:paddingStart="9dp"
-                    android:paddingTop="3dp"
-                    android:paddingEnd="9dp"
-                    android:paddingBottom="3dp"
-                    android:text="配置指引 ›"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/tvDegradedDesc"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:lineSpacingExtra="2dp"
-                android:text="已启用模拟定位与网络定位阻断。"
-                android:textColor="@color/warning_desc"
-                android:textSize="11sp" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <!-- 地图选点区域 + 原生悬浮搜索栏 -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <WebView
-            android:id="@+id/webMap"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="14dp"
-            android:layout_marginTop="12dp"
-            android:layout_marginEnd="14dp"
-            android:orientation="vertical">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_floating_card"
-                android:elevation="6dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="12dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="6dp"
-                android:paddingBottom="5dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="6dp"
-                    android:text="⌕"
-                    android:textColor="@color/text_muted"
+                    android:id="@+id/btnOpenDrawer"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="10dp"
+                    android:background="@drawable/bg_status_pill"
+                    android:gravity="center"
+                    android:text="☰"
+                    android:textColor="@color/text_primary"
                     android:textSize="16sp"
                     android:textStyle="bold" />
 
-                <EditText
-                    android:id="@+id/etPlaceSearch"
+                <LinearLayout
                     android:layout_width="0dp"
-                    android:layout_height="36dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:background="@null"
-                    android:hint="搜索地名或输入经纬度"
-                    android:imeOptions="actionSearch"
-                    android:inputType="text"
-                    android:maxLines="1"
-                    android:singleLine="true"
-                    android:textColor="@color/text_primary"
-                    android:textColorHint="@color/text_hint"
-                    android:textSize="13.5sp" />
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:letterSpacing="0.01"
+                        android:text="定位漂移助手"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvSubtitleMode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="1.5dp"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="系统级防漂移 · 零三方注入"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10.5sp" />
+                </LinearLayout>
 
                 <TextView
-                    android:id="@+id/btnClearSearch"
-                    android:layout_width="24dp"
-                    android:layout_height="24dp"
-                    android:layout_marginEnd="6dp"
-                    android:background="@drawable/bg_status_pill"
-                    android:gravity="center"
-                    android:text="×"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:visibility="gone" />
-
-                <Button
-                    android:id="@+id/btnSearchPlace"
+                    android:id="@+id/tvRunStatus"
                     android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:background="@drawable/bg_btn_primary"
-                    android:minWidth="58dp"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:stateListAnimator="@null"
-                    android:text="定位"
-                    android:textColor="#FFFFFF"
-                    android:textSize="12.5sp"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_status_pill"
+                    android:paddingStart="10dp"
+                    android:paddingTop="5dp"
+                    android:paddingEnd="10dp"
+                    android:paddingBottom="5dp"
+                    android:text="● 未开启"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11.5sp"
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <ScrollView
-                android:id="@+id/candidatesScroll"
+            <!-- 状态提示横幅（仅在需要权限/重启或降级模式提示时展示） -->
+            <LinearLayout
+                android:id="@+id/cardDegradedBanner"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:background="@drawable/bg_floating_card"
-                android:elevation="6dp"
-                android:maxHeight="196dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_warning_card"
+                android:clickable="true"
+                android:focusable="true"
+                android:orientation="vertical"
+                android:paddingStart="12dp"
+                android:paddingTop="7dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="7dp"
                 android:visibility="gone">
 
                 <LinearLayout
-                    android:id="@+id/candidatesList"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical" />
-            </ScrollView>
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvDegradedTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="模式已就绪"
+                        android:textColor="@color/warning_title"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnDegradedAction"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="9dp"
+                        android:paddingTop="3dp"
+                        android:paddingEnd="9dp"
+                        android:paddingBottom="3dp"
+                        android:text="配置指引 ›"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvDegradedDesc"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="已启用模拟定位与网络定位阻断。"
+                    android:textColor="@color/warning_desc"
+                    android:textSize="11sp" />
+            </LinearLayout>
         </LinearLayout>
-    </FrameLayout>
 
-    <!-- 底部紧凑控制面板 -->
-    <LinearLayout
-        android:id="@+id/bottomControlPanel"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@drawable/bg_bottom_sheet"
-        android:elevation="14dp"
-        android:orientation="vertical"
-        android:paddingStart="14dp"
-        android:paddingTop="10dp"
-        android:paddingEnd="14dp"
-        android:paddingBottom="12dp">
-
-        <!-- 坐标卡片（内置 输入 / 收藏 / 复制 快捷操作） -->
-        <LinearLayout
+        <!-- 最大化地图选点区域 + 原生悬浮搜索栏 -->
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_info_card"
-            android:orientation="vertical"
-            android:paddingStart="12dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="8dp">
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <WebView
+                android:id="@+id/webMap"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:layout_marginStart="14dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="14dp"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_floating_card"
+                    android:elevation="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="12dp"
+                    android:paddingTop="5dp"
+                    android:paddingEnd="6dp"
+                    android:paddingBottom="5dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="6dp"
+                        android:text="⌕"
+                        android:textColor="@color/text_muted"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <EditText
+                        android:id="@+id/etPlaceSearch"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:background="@null"
+                        android:hint="搜索地名或输入经纬度"
+                        android:imeOptions="actionSearch"
+                        android:inputType="text"
+                        android:maxLines="1"
+                        android:singleLine="true"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_hint"
+                        android:textSize="13.5sp" />
+
+                    <TextView
+                        android:id="@+id/btnClearSearch"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_marginEnd="6dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:gravity="center"
+                        android:text="×"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/btnSearchPlace"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:background="@drawable/bg_btn_primary"
+                        android:minWidth="58dp"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:stateListAnimator="@null"
+                        android:text="定位"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <ScrollView
+                    android:id="@+id/candidatesScroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_floating_card"
+                    android:elevation="6dp"
+                    android:maxHeight="196dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/candidatesList"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+                </ScrollView>
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- 精简底部控制面板（收藏夹/策略/设置均收纳至侧边栏） -->
+        <LinearLayout
+            android:id="@+id/bottomControlPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_bottom_sheet"
+            android:elevation="14dp"
+            android:orientation="vertical"
+            android:paddingStart="14dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="12dp">
+
+            <!-- 当前坐标卡片 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_info_card"
+                android:orientation="vertical"
+                android:paddingStart="12dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="8dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="5dp"
+                        android:text="◉"
+                        android:textColor="@color/accent_blue"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvAddress"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="当前选点: 北京天安门"
+                        android:textColor="@color/text_primary"
+                        android:textSize="13.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnInputCoord"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="5dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="7dp"
+                        android:paddingTop="3dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="3dp"
+                        android:text="输入"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnAddFavorite"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="7dp"
+                        android:paddingTop="3dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="3dp"
+                        android:text="收藏"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnCopyCoord"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="7dp"
+                        android:paddingTop="3dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="3dp"
+                        android:text="复制"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
                 <TextView
-                    android:layout_width="wrap_content"
+                    android:id="@+id/tvCoords"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginEnd="5dp"
-                    android:text="◉"
-                    android:textColor="@color/accent_blue"
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="monospace"
+                    android:lineSpacingExtra="1.5dp"
+                    android:text="GCJ: 39.90882, 116.39747 | WGS: 39.90742, 116.39123"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10.5sp" />
+            </LinearLayout>
+
+            <!-- 轨迹控制卡片（进入绘制模式或存在轨迹时自动展开） -->
+            <LinearLayout
+                android:id="@+id/routeControlCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:background="@drawable/bg_info_card"
+                android:orientation="vertical"
+                android:paddingStart="10dp"
+                android:paddingTop="7dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="7dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvRouteInfo"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="轨迹: 0 点 · 0m"
+                        android:textColor="@color/text_body"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnSavedRoutes"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="7dp"
+                        android:paddingTop="2.5dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="2.5dp"
+                        android:text="路线库"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnRouteUndo"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:paddingStart="7dp"
+                        android:paddingTop="2.5dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="2.5dp"
+                        android:text="撤销"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnRouteClear"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:paddingStart="7dp"
+                        android:paddingTop="2.5dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="2.5dp"
+                        android:text="清空"
+                        android:textColor="@color/accent_red"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnRouteSave"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="7dp"
+                        android:paddingTop="2.5dp"
+                        android:paddingEnd="7dp"
+                        android:paddingBottom="2.5dp"
+                        android:text="保存"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnRouteSpeed"
+                        android:layout_width="0dp"
+                        android:layout_height="31dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:padding="0dp"
+                        android:stateListAnimator="@null"
+                        android:text="跑步 4.0m/s"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnRouteLoop"
+                        android:layout_width="wrap_content"
+                        android:layout_height="31dp"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:minWidth="50dp"
+                        android:paddingStart="9dp"
+                        android:paddingEnd="9dp"
+                        android:stateListAnimator="@null"
+                        android:text="单次"
+                        android:textColor="@color/accent_blue_text"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnRoutePlayPause"
+                        android:layout_width="0dp"
+                        android:layout_height="31dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1.3"
+                        android:background="@drawable/bg_btn_primary"
+                        android:padding="0dp"
+                        android:stateListAnimator="@null"
+                        android:text="▶ 开始模拟"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 精简双快捷入口（悬浮摇杆 + 绘制轨迹） -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnToggleJoystick"
+                    android:layout_width="0dp"
+                    android:layout_height="35dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:padding="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="悬浮摇杆"
+                    android:textColor="@color/accent_blue_text"
                     android:textSize="12sp"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/tvAddress"
+                <Button
+                    android:id="@+id/btnDrawRoute"
                     android:layout_width="0dp"
-                    android:layout_height="wrap_content"
+                    android:layout_height="35dp"
+                    android:layout_marginStart="8dp"
                     android:layout_weight="1"
+                    android:background="@drawable/bg_btn_secondary"
                     android:ellipsize="end"
                     android:maxLines="1"
-                    android:text="当前选点: 北京天安门"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13.5sp"
+                    android:padding="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="绘制轨迹"
+                    android:textColor="@color/accent_blue_text"
+                    android:textSize="12sp"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/btnInputCoord"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="5dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:paddingStart="7dp"
-                    android:paddingTop="3dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="3dp"
-                    android:text="输入"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="10.5sp"
+                <!-- 保留策略折叠按钮 ID 供兼容，策略面板已常驻侧边栏 -->
+                <Button
+                    android:id="@+id/btnToggleOptions"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- 一键启停主操作行 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnToggleDrift"
+                    android:layout_width="0dp"
+                    android:layout_height="43dp"
+                    android:layout_weight="2"
+                    android:background="@drawable/bg_btn_primary"
+                    android:stateListAnimator="@null"
+                    android:text="开启定位漂移"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14.5sp"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/btnAddFavorite"
+                <Button
+                    android:id="@+id/btnUpdatePoint"
+                    android:layout_width="0dp"
+                    android:layout_height="43dp"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_btn_primary"
+                    android:backgroundTint="#059669"
+                    android:stateListAnimator="@null"
+                    android:text="同步新选点"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 侧边栏半透明遮罩层 -->
+    <View
+        android:id="@+id/drawerScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#80000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone" />
+
+    <!-- 左侧滑动导航侧边栏 -->
+    <LinearLayout
+        android:id="@+id/drawerPanel"
+        android:layout_width="296dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="@color/surface_sheet"
+        android:clickable="true"
+        android:elevation="18dp"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <!-- 侧边栏品牌头部 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/surface_header"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingTop="18dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="16dp">
+
+            <ImageView
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:contentDescription="应用图标"
+                android:src="@drawable/ic_launcher" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="11dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:paddingStart="7dp"
-                    android:paddingTop="3dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="3dp"
-                    android:text="收藏"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="10.5sp"
-                    android:textStyle="bold" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="定位漂移助手"
+                        android:textColor="@color/text_primary"
+                        android:textSize="15.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvDrawerVersion"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:paddingStart="6dp"
+                        android:paddingTop="1dp"
+                        android:paddingEnd="6dp"
+                        android:paddingBottom="1dp"
+                        android:text="v1.2.0"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
                 <TextView
-                    android:id="@+id/btnCopyCoord"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:paddingStart="7dp"
-                    android:paddingTop="3dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="3dp"
-                    android:text="复制"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="10.5sp"
-                    android:textStyle="bold" />
+                    android:layout_marginTop="2dp"
+                    android:text="零三方注入 · 系统级防漂移"
+                    android:textColor="@color/text_muted"
+                    android:textSize="10.5sp" />
             </LinearLayout>
 
             <TextView
-                android:id="@+id/tvCoords"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:fontFamily="monospace"
-                android:lineSpacingExtra="1.5dp"
-                android:text="GCJ: 39.90882, 116.39747 | WGS: 39.90742, 116.39123"
+                android:id="@+id/btnCloseDrawer"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:background="@drawable/bg_status_pill"
+                android:gravity="center"
+                android:text="×"
                 android:textColor="@color/text_secondary"
-                android:textSize="10.5sp" />
+                android:textSize="15sp"
+                android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 轨迹控制卡片（进入绘制模式或存在轨迹时展开，关闭后完全折叠不留空白） -->
-        <LinearLayout
-            android:id="@+id/routeControlCard"
+        <View
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="7dp"
-            android:background="@drawable/bg_info_card"
-            android:orientation="vertical"
-            android:paddingStart="10dp"
-            android:paddingTop="7dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="7dp"
-            android:visibility="gone">
+            android:layout_height="1dp"
+            android:background="@color/border_subtle" />
+
+        <!-- 侧边栏可滚动功能区 -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:orientation="vertical"
+                android:paddingStart="14dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="20dp">
+
+                <!-- 分区一：运行环境与模式 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginBottom="7dp"
+                    android:text="运行环境与模式"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_drawer_item"
+                    android:orientation="vertical"
+                    android:padding="10dp">
+
+                    <TextView
+                        android:id="@+id/tvRootStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_status_pill"
+                        android:ellipsize="end"
+                        android:gravity="center"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingTop="5dp"
+                        android:paddingEnd="8dp"
+                        android:paddingBottom="5dp"
+                        android:text="模式: 检测中..."
+                        android:textColor="@color/text_secondary"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvXposedStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:ellipsize="end"
+                        android:gravity="center"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingTop="5dp"
+                        android:paddingEnd="8dp"
+                        android:paddingBottom="5dp"
+                        android:text="权限: 检测中..."
+                        android:textColor="@color/text_secondary"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/btnSwitchMode"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_btn_secondary"
+                            android:gravity="center"
+                            android:paddingTop="6dp"
+                            android:paddingBottom="6dp"
+                            android:text="切换模式"
+                            android:textColor="@color/accent_blue_text"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/btnHelpGuide"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_btn_secondary"
+                            android:gravity="center"
+                            android:paddingTop="6dp"
+                            android:paddingBottom="6dp"
+                            android:text="配置指引"
+                            android:textColor="@color/accent_blue_text"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- 分区二：常用功能与设置 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginTop="14dp"
+                    android:layout_marginBottom="7dp"
+                    android:text="常用功能"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnFavorites"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_drawer_item"
+                    android:gravity="center_vertical|start"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:stateListAnimator="@null"
+                    android:text="收藏夹"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/tvRouteInfo"
-                    android:layout_width="0dp"
+                    android:id="@+id/btnOpenSettings"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="7dp"
+                    android:background="@drawable/bg_drawer_item"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="⚙ 参数设置（速度 / 海拔 / 外观）"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnThemeToggle"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="7dp"
+                    android:background="@drawable/bg_drawer_item"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="◐ 夜间模式：跟随系统"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <!-- 分区三：防漂移与传感器策略 -->
+                <TextView
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:text="轨迹: 0 点 · 0m"
-                    android:textColor="@color/text_body"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginTop="14dp"
+                    android:layout_marginBottom="7dp"
+                    android:text="防漂移与传感器策略"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/strategyOptionsPanel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="visible">
+
+                    <CheckBox
+                        android:id="@+id/cbSystemMock"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:background="@drawable/bg_chip_toggle"
+                        android:buttonTint="@color/accent_blue"
+                        android:checked="true"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:text="系统GPS注入"
+                        android:textColor="@color/text_body"
+                        android:textSize="12.5sp" />
+
+                    <CheckBox
+                        android:id="@+id/cbAntiDrift"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:layout_marginTop="6dp"
+                        android:background="@drawable/bg_chip_toggle"
+                        android:buttonTint="@color/accent_blue"
+                        android:checked="true"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:text="防基站/WiFi漂移"
+                        android:textColor="@color/text_body"
+                        android:textSize="12.5sp" />
+
+                    <CheckBox
+                        android:id="@+id/cbIptables"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:layout_marginTop="6dp"
+                        android:background="@drawable/bg_chip_toggle"
+                        android:buttonTint="@color/accent_blue"
+                        android:checked="true"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:text="内核阻断"
+                        android:textColor="@color/text_body"
+                        android:textSize="12.5sp" />
+
+                    <CheckBox
+                        android:id="@+id/cbVpn"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:layout_marginTop="6dp"
+                        android:background="@drawable/bg_chip_toggle"
+                        android:buttonTint="@color/accent_blue"
+                        android:checked="false"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:text="VPN阻断"
+                        android:textColor="@color/text_body"
+                        android:textSize="12.5sp" />
+
+                    <CheckBox
+                        android:id="@+id/cbStepSim"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:layout_marginTop="6dp"
+                        android:background="@drawable/bg_chip_toggle"
+                        android:buttonTint="@color/accent_amber"
+                        android:checked="false"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="10dp"
+                        android:singleLine="true"
+                        android:text="步数模拟(实验性·步行/跑步)"
+                        android:textColor="@color/text_body"
+                        android:textSize="12.5sp" />
+                </LinearLayout>
+
+                <!-- 分区四：关于 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginTop="14dp"
+                    android:layout_marginBottom="7dp"
+                    android:text="关于"
+                    android:textColor="@color/text_muted"
                     android:textSize="11.5sp"
                     android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/btnSavedRoutes"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:paddingStart="7dp"
-                    android:paddingTop="2.5dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="2.5dp"
-                    android:text="路线库"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="10.5sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/btnRouteUndo"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:background="@drawable/bg_status_pill"
-                    android:paddingStart="7dp"
-                    android:paddingTop="2.5dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="2.5dp"
-                    android:text="撤销"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="10.5sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/btnRouteClear"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:background="@drawable/bg_status_pill"
-                    android:paddingStart="7dp"
-                    android:paddingTop="2.5dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="2.5dp"
-                    android:text="清空"
-                    android:textColor="@color/accent_red"
-                    android:textSize="10.5sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/btnRouteSave"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:paddingStart="7dp"
-                    android:paddingTop="2.5dp"
-                    android:paddingEnd="7dp"
-                    android:paddingBottom="2.5dp"
-                    android:text="保存"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="10.5sp"
+                    android:id="@+id/btnOpenAbout"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_drawer_item"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="ℹ 关于 LocationDrifter"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp"
                     android:textStyle="bold" />
             </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/btnRouteSpeed"
-                    android:layout_width="0dp"
-                    android:layout_height="31dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:padding="0dp"
-                    android:stateListAnimator="@null"
-                    android:text="跑步 4.0m/s"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/btnRouteLoop"
-                    android:layout_width="wrap_content"
-                    android:layout_height="31dp"
-                    android:layout_marginStart="6dp"
-                    android:background="@drawable/bg_btn_secondary"
-                    android:minWidth="50dp"
-                    android:paddingStart="9dp"
-                    android:paddingEnd="9dp"
-                    android:stateListAnimator="@null"
-                    android:text="单次"
-                    android:textColor="@color/accent_blue_text"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/btnRoutePlayPause"
-                    android:layout_width="0dp"
-                    android:layout_height="31dp"
-                    android:layout_marginStart="6dp"
-                    android:layout_weight="1.3"
-                    android:background="@drawable/bg_btn_primary"
-                    android:padding="0dp"
-                    android:stateListAnimator="@null"
-                    android:text="▶ 开始模拟"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11.5sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <!-- 精简单行快捷工具栏（4 枚核心功能入口） -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="7dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btnToggleJoystick"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_secondary"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:padding="0dp"
-                android:stateListAnimator="@null"
-                android:text="悬浮摇杆"
-                android:textColor="@color/accent_blue_text"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnDrawRoute"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_secondary"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:padding="0dp"
-                android:stateListAnimator="@null"
-                android:text="绘制轨迹"
-                android:textColor="@color/accent_blue_text"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnFavorites"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_secondary"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:padding="0dp"
-                android:stateListAnimator="@null"
-                android:text="收藏夹"
-                android:textColor="@color/accent_blue_text"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnToggleOptions"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_secondary"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:padding="0dp"
-                android:stateListAnimator="@null"
-                android:text="策略 ▾"
-                android:textColor="@color/text_secondary"
-                android:textSize="11.5sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <!-- 可折叠防漂移策略面板（默认收起，释放地图空间） -->
-        <LinearLayout
-            android:id="@+id/strategyOptionsPanel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="7dp"
-            android:orientation="vertical"
-            android:visibility="gone">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <CheckBox
-                    android:id="@+id/cbSystemMock"
-                    android:layout_width="0dp"
-                    android:layout_height="36dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_chip_toggle"
-                    android:buttonTint="@color/accent_blue"
-                    android:checked="true"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:paddingStart="6dp"
-                    android:paddingEnd="8dp"
-                    android:singleLine="true"
-                    android:text="系统GPS注入"
-                    android:textColor="@color/text_body"
-                    android:textSize="12sp" />
-
-                <CheckBox
-                    android:id="@+id/cbAntiDrift"
-                    android:layout_width="0dp"
-                    android:layout_height="36dp"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_chip_toggle"
-                    android:buttonTint="@color/accent_blue"
-                    android:checked="true"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:paddingStart="6dp"
-                    android:paddingEnd="8dp"
-                    android:singleLine="true"
-                    android:text="防基站/WiFi漂移"
-                    android:textColor="@color/text_body"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:orientation="horizontal">
-
-                <CheckBox
-                    android:id="@+id/cbIptables"
-                    android:layout_width="0dp"
-                    android:layout_height="36dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_chip_toggle"
-                    android:buttonTint="@color/accent_blue"
-                    android:checked="true"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:paddingStart="6dp"
-                    android:paddingEnd="8dp"
-                    android:singleLine="true"
-                    android:text="内核阻断"
-                    android:textColor="@color/text_body"
-                    android:textSize="12sp" />
-
-                <CheckBox
-                    android:id="@+id/cbVpn"
-                    android:layout_width="0dp"
-                    android:layout_height="36dp"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_chip_toggle"
-                    android:buttonTint="@color/accent_blue"
-                    android:checked="false"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:paddingStart="6dp"
-                    android:paddingEnd="8dp"
-                    android:singleLine="true"
-                    android:text="VPN阻断"
-                    android:textColor="@color/text_body"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <CheckBox
-                android:id="@+id/cbStepSim"
-                android:layout_width="match_parent"
-                android:layout_height="36dp"
-                android:layout_marginTop="6dp"
-                android:background="@drawable/bg_chip_toggle"
-                android:buttonTint="@color/accent_amber"
-                android:checked="false"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:paddingStart="6dp"
-                android:paddingEnd="8dp"
-                android:singleLine="true"
-                android:text="步数模拟(实验性·步行/跑步)"
-                android:textColor="@color/text_body"
-                android:textSize="12sp" />
-        </LinearLayout>
-
-        <!-- 一键启停主操作行 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btnToggleDrift"
-                android:layout_width="0dp"
-                android:layout_height="43dp"
-                android:layout_weight="2"
-                android:background="@drawable/bg_btn_primary"
-                android:stateListAnimator="@null"
-                android:text="开启定位漂移"
-                android:textColor="#FFFFFF"
-                android:textSize="14.5sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnUpdatePoint"
-                android:layout_width="0dp"
-                android:layout_height="43dp"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_btn_primary"
-                android:backgroundTint="#059669"
-                android:stateListAnimator="@null"
-                android:text="同步新选点"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
-        </LinearLayout>
+        </ScrollView>
     </LinearLayout>
-</LinearLayout>
+</FrameLayout>

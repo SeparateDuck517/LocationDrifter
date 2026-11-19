@@ -551,7 +551,7 @@ class MockLocationService : Service() {
                 val loc = Location(provider).apply {
                     latitude = lat
                     longitude = lng
-                    altitude = 36.0
+                    altitude = ConfigManager.getAltitude(this@MockLocationService)
                     accuracy = when (provider) {
                         LocationManager.GPS_PROVIDER -> 2.5f
                         "fused" -> 3.0f

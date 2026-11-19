@@ -11,7 +11,7 @@ import java.util.concurrent.Executors
 import kotlin.random.Random
 
 /**
- * 统一管理当前选点坐标、开关状态、实验性步数模拟与收藏地点，同时异步同步到：
+ * 统一管理当前选点坐标、开关状态、实验性步数模拟、海拔高度与收藏地点，同时异步同步到：
  * 1) Settings.Global (system_server 等系统进程零延迟实时读取)
  * 2) LSPosed MODE_WORLD_READABLE SharedPreferences
  * 3) /data/local/tmp/location_drifter.json (通过 RootUtils 串行队列落盘兜底)
@@ -38,7 +38,9 @@ object ConfigManager {
     const val KEY_ENABLE_STEP_SIM = "enable_step_sim"
     const val KEY_SIM_STEP_COUNT = "sim_step_count"
     const val KEY_FAVORITES = "favorites"
+    const val KEY_ALTITUDE = "altitude"
     const val KEY_UPDATED_AT = "updated_at"
+    const val DEFAULT_ALTITUDE = 36.0
 
     private const val DEFAULT_GCJ_LAT = 39.908823
     private const val DEFAULT_GCJ_LNG = 116.397470
@@ -54,6 +56,9 @@ object ConfigManager {
     private var lastRootTmpSyncMs: Long = 0L
 
     private var fractionalStepAccumulator: Double = 0.0
+
+    @Volatile
+    private var cachedAltitudeMeters: Double = DEFAULT_ALTITUDE
 
     data class DriftConfig(
         val enabled: Boolean,
@@ -241,6 +246,30 @@ object ConfigManager {
         return updated
     }
 
+    fun getAltitude(context: Context): Double {
+        val (prefs, _) = getPrefsAndWorldReadableState(context)
+        val value = prefs.getString(KEY_ALTITUDE, null)?.toDoubleOrNull() ?: DEFAULT_ALTITUDE
+        val clamped = value.coerceIn(-500.0, 9000.0)
+        cachedAltitudeMeters = clamped
+        return clamped
+    }
+
+    fun setAltitude(context: Context, altitudeMeters: Double) {
+        val appCtx = context.applicationContext ?: context
+        val clamped = altitudeMeters.coerceIn(-500.0, 9000.0)
+        cachedAltitudeMeters = clamped
+        val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
+        prefs.edit().putString(KEY_ALTITUDE, clamped.toString()).apply()
+        val current = load(appCtx)
+        val json = toJson(current.copy(updatedAt = System.currentTimeMillis())).toString()
+        settingsSyncExecutor.execute {
+            try {
+                Settings.Global.putString(appCtx.contentResolver, SETTINGS_GLOBAL_KEY, json)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     fun toJson(config: DriftConfig): JSONObject {
         return JSONObject().apply {
             put(KEY_ENABLED, config.enabled)
@@ -253,6 +282,7 @@ object ConfigManager {
             put(KEY_JITTER, config.enableJitter)
             put(KEY_ENABLE_STEP_SIM, config.enableStepSim)
             put(KEY_SIM_STEP_COUNT, config.simStepCount)
+            put(KEY_ALTITUDE, cachedAltitudeMeters)
             put(KEY_UPDATED_AT, config.updatedAt)
         }
     }

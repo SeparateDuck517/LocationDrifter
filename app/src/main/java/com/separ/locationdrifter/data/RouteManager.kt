@@ -12,7 +12,7 @@ import kotlin.math.sqrt
 
 /**
  * 轨迹规划与持久化管理器：
- * 1) 维护当前待执行轨迹（支持单次 / 循环 / 往返模式与速度档位）
+ * 1) 维护当前待执行轨迹（支持单次 / 循环 / 往返模式与可自定义速度档位）
  * 2) 持久化用户保存的常用轨迹列表
  * 3) 提供高精度 Haversine 距离、方位角与沿线插值计算
  */
@@ -24,6 +24,24 @@ object RouteManager {
     private const val KEY_ACTIVE_LOOP_MODE = "active_route_loop_mode"
     private const val KEY_SAVED_ROUTES = "saved_routes_json"
     private const val KEY_JOYSTICK_SPEED = "joystick_speed_mps"
+    private const val KEY_CUSTOM_WALK_SPEED = "custom_walk_speed"
+    private const val KEY_CUSTOM_RUN_SPEED = "custom_run_speed"
+    private const val KEY_CUSTOM_BIKE_SPEED = "custom_bike_speed"
+    private const val KEY_CUSTOM_DRIVE_SPEED = "custom_drive_speed"
+
+    const val DEFAULT_WALK_SPEED = 1.5f
+    const val DEFAULT_RUN_SPEED = 4.0f
+    const val DEFAULT_BIKE_SPEED = 8.0f
+    const val DEFAULT_DRIVE_SPEED = 16.0f
+
+    @Volatile var walkSpeedMps: Float = DEFAULT_WALK_SPEED
+        private set
+    @Volatile var runSpeedMps: Float = DEFAULT_RUN_SPEED
+        private set
+    @Volatile var bikeSpeedMps: Float = DEFAULT_BIKE_SPEED
+        private set
+    @Volatile var driveSpeedMps: Float = DEFAULT_DRIVE_SPEED
+        private set
 
     const val LOOP_ONCE = 0
     const val LOOP_REPEAT = 1
@@ -55,20 +73,54 @@ object RouteManager {
         val totalMeters: Double
     )
 
-    val SPEED_PRESETS = listOf(
-        1.5f to "步行 1.5m/s",
-        4.0f to "跑步 4.0m/s",
-        8.0f to "骑行 8.0m/s",
-        16.0f to "驾车 16m/s"
+    fun initCustomSpeeds(context: Context) {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        walkSpeedMps = prefs.getFloat(KEY_CUSTOM_WALK_SPEED, DEFAULT_WALK_SPEED).coerceIn(0.3f, 3.5f)
+        runSpeedMps = prefs.getFloat(KEY_CUSTOM_RUN_SPEED, DEFAULT_RUN_SPEED).coerceIn(2.0f, 8.0f)
+        bikeSpeedMps = prefs.getFloat(KEY_CUSTOM_BIKE_SPEED, DEFAULT_BIKE_SPEED).coerceIn(4.0f, 18.0f)
+        driveSpeedMps = prefs.getFloat(KEY_CUSTOM_DRIVE_SPEED, DEFAULT_DRIVE_SPEED).coerceIn(8.0f, 40.0f)
+    }
+
+    fun saveCustomSpeeds(
+        context: Context,
+        walk: Float,
+        run: Float,
+        bike: Float,
+        drive: Float
+    ) {
+        walkSpeedMps = walk.coerceIn(0.3f, 3.5f)
+        runSpeedMps = run.coerceIn(2.0f, 8.0f)
+        bikeSpeedMps = bike.coerceIn(4.0f, 18.0f)
+        driveSpeedMps = drive.coerceIn(8.0f, 40.0f)
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_CUSTOM_WALK_SPEED, walkSpeedMps)
+            .putFloat(KEY_CUSTOM_RUN_SPEED, runSpeedMps)
+            .putFloat(KEY_CUSTOM_BIKE_SPEED, bikeSpeedMps)
+            .putFloat(KEY_CUSTOM_DRIVE_SPEED, driveSpeedMps)
+            .apply()
+    }
+
+    fun resetCustomSpeeds(context: Context) {
+        saveCustomSpeeds(context, DEFAULT_WALK_SPEED, DEFAULT_RUN_SPEED, DEFAULT_BIKE_SPEED, DEFAULT_DRIVE_SPEED)
+    }
+
+    fun getSpeedPresets(): List<Pair<Float, String>> = listOf(
+        walkSpeedMps to "步行 ${String.format(java.util.Locale.US, "%.1f", walkSpeedMps)}m/s",
+        runSpeedMps to "跑步 ${String.format(java.util.Locale.US, "%.1f", runSpeedMps)}m/s",
+        bikeSpeedMps to "骑行 ${String.format(java.util.Locale.US, "%.1f", bikeSpeedMps)}m/s",
+        driveSpeedMps to "驾车 ${String.format(java.util.Locale.US, "%.1f", driveSpeedMps)}m/s"
     )
 
     fun speedShortLabel(speedMps: Float): String {
-        return when {
-            speedMps <= 2.2f -> "步行 ${String.format(java.util.Locale.US, "%.1f", speedMps)}m/s"
-            speedMps <= 5.5f -> "跑步 ${String.format(java.util.Locale.US, "%.1f", speedMps)}m/s"
-            speedMps <= 11.0f -> "骑行 ${String.format(java.util.Locale.US, "%.0f", speedMps)}m/s"
-            else -> "驾车 ${String.format(java.util.Locale.US, "%.0f", speedMps)}m/s"
-        }
+        val tiers = listOf(
+            walkSpeedMps to "步行",
+            runSpeedMps to "跑步",
+            bikeSpeedMps to "骑行",
+            driveSpeedMps to "驾车"
+        )
+        val closest = tiers.minByOrNull { kotlin.math.abs(it.first - speedMps) }?.second ?: "跑步"
+        return "$closest ${String.format(java.util.Locale.US, "%.1f", speedMps)}m/s"
     }
 
     fun loopModeLabel(loopMode: Int): String {
@@ -80,9 +132,10 @@ object RouteManager {
     }
 
     fun nextSpeedPreset(currentSpeed: Float): Float {
-        val idx = SPEED_PRESETS.indexOfFirst { kotlin.math.abs(it.first - currentSpeed) < 0.2f }
-        val nextIdx = if (idx < 0) 0 else (idx + 1) % SPEED_PRESETS.size
-        return SPEED_PRESETS[nextIdx].first
+        val presets = getSpeedPresets()
+        val idx = presets.indexOfFirst { kotlin.math.abs(it.first - currentSpeed) < 0.25f }
+        val nextIdx = if (idx < 0) 0 else (idx + 1) % presets.size
+        return presets[nextIdx].first
     }
 
     fun nextLoopMode(currentMode: Int): Int {
@@ -91,13 +144,13 @@ object RouteManager {
 
     fun getJoystickSpeed(context: Context): Float {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getFloat(KEY_JOYSTICK_SPEED, 4.0f).coerceIn(0.5f, 35.0f)
+        return prefs.getFloat(KEY_JOYSTICK_SPEED, runSpeedMps).coerceIn(0.3f, 40.0f)
     }
 
     fun setJoystickSpeed(context: Context, speedMps: Float) {
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putFloat(KEY_JOYSTICK_SPEED, speedMps.coerceIn(0.5f, 35.0f))
+            .putFloat(KEY_JOYSTICK_SPEED, speedMps.coerceIn(0.3f, 40.0f))
             .apply()
     }
 
@@ -116,13 +169,13 @@ object RouteManager {
 
     fun getActiveRouteSpeed(context: Context): Float {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getFloat(KEY_ACTIVE_SPEED, 4.0f).coerceIn(0.5f, 35.0f)
+        return prefs.getFloat(KEY_ACTIVE_SPEED, runSpeedMps).coerceIn(0.3f, 40.0f)
     }
 
     fun setActiveRouteSpeed(context: Context, speedMps: Float) {
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putFloat(KEY_ACTIVE_SPEED, speedMps.coerceIn(0.5f, 35.0f))
+            .putFloat(KEY_ACTIVE_SPEED, speedMps.coerceIn(0.3f, 40.0f))
             .apply()
     }
 
