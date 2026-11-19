@@ -25,7 +25,6 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
-import android.transition.AutoTransition
 import android.transition.TransitionManager
 import android.util.TypedValue
 import android.view.Gravity
@@ -200,7 +199,9 @@ class MainActivity : Activity() {
     private lateinit var btnRoutePlayPause: Button
     private lateinit var btnToggleJoystick: Button
     private lateinit var btnDrawRoute: Button
-    private lateinit var btnSavedRoutes: Button
+    private lateinit var btnSavedRoutes: TextView
+    private lateinit var btnToggleOptions: Button
+    private lateinit var strategyOptionsPanel: LinearLayout
 
     private lateinit var webMap: WebView
     private lateinit var cbSystemMock: CheckBox
@@ -233,6 +234,9 @@ class MainActivity : Activity() {
     private var lastRenderedEnabled: Boolean? = null
     private var suppressCheckboxCallback = false
     private var isImeVisible = false
+
+    // 底部策略面板折叠状态
+    private var isStrategyExpanded = false
 
     // 轨迹绘制与巡航状态
     private var isRouteDrawMode = false
@@ -454,6 +458,7 @@ class MainActivity : Activity() {
         refreshJoystickButtonUI()
         refreshSavedRoutesCount()
         refreshRoutePanelUI()
+        refreshStrategyToggleBadge()
         modeDialogRefreshCallback?.invoke()
     }
 
@@ -538,6 +543,8 @@ class MainActivity : Activity() {
         btnToggleJoystick = findViewById(R.id.btnToggleJoystick)
         btnDrawRoute = findViewById(R.id.btnDrawRoute)
         btnSavedRoutes = findViewById(R.id.btnSavedRoutes)
+        btnToggleOptions = findViewById(R.id.btnToggleOptions)
+        strategyOptionsPanel = findViewById(R.id.strategyOptionsPanel)
 
         webMap = findViewById(R.id.webMap)
         cbSystemMock = findViewById(R.id.cbSystemMock)
@@ -549,8 +556,8 @@ class MainActivity : Activity() {
         btnToggleDrift = findViewById(R.id.btnToggleDrift)
         btnUpdatePoint = findViewById(R.id.btnUpdatePoint)
 
-        val btnInputCoord = findViewById<Button>(R.id.btnInputCoord)
-        val btnAddFavorite = findViewById<Button>(R.id.btnAddFavorite)
+        val btnInputCoord = findViewById<TextView>(R.id.btnInputCoord)
+        val btnAddFavorite = findViewById<TextView>(R.id.btnAddFavorite)
 
         attachPressScaleEffect(btnToggleDrift, 0.97f)
         attachPressScaleEffect(btnUpdatePoint, 0.96f)
@@ -560,7 +567,8 @@ class MainActivity : Activity() {
         attachPressScaleEffect(btnFavorites, 0.96f)
         attachPressScaleEffect(btnToggleJoystick, 0.96f)
         attachPressScaleEffect(btnDrawRoute, 0.96f)
-        attachPressScaleEffect(btnSavedRoutes, 0.96f)
+        attachPressScaleEffect(btnSavedRoutes, 0.95f)
+        attachPressScaleEffect(btnToggleOptions, 0.96f)
         attachPressScaleEffect(btnRoutePlayPause, 0.96f)
         attachPressScaleEffect(btnSwitchMode, 0.95f)
         attachPressScaleEffect(btnHelpGuide, 0.95f)
@@ -644,8 +652,20 @@ class MainActivity : Activity() {
             activeRoutePoints = emptyList()
             routeTotalMeters = 0.0
             webMap.evaluateJavascript("window.clearRoute()", null)
-            refreshRoutePanelUI()
+            if (isRouteDrawMode) {
+                setRouteDrawMode(false)
+            } else {
+                refreshRoutePanelUI()
+            }
             toast("已清空轨迹")
+        }
+
+        btnToggleOptions.setOnClickListener {
+            isStrategyExpanded = !isStrategyExpanded
+            strategyOptionsPanel.visibility = if (isStrategyExpanded) View.VISIBLE else View.GONE
+            bottomControlPanel.requestLayout()
+            rootMainLayout.requestLayout()
+            refreshStrategyToggleBadge()
         }
 
         btnRouteSave.setOnClickListener {
@@ -792,13 +812,12 @@ class MainActivity : Activity() {
         totalMetersOverride: Double = -1.0
     ) {
         val shouldShow = isRouteDrawMode || activeRoutePoints.isNotEmpty() || MockLocationService.isRoutePlaying
-        if (routeControlCard.visibility != if (shouldShow) View.VISIBLE else View.GONE) {
-            val transition = AutoTransition().apply {
-                duration = 180L
-                interpolator = DecelerateInterpolator()
-            }
-            TransitionManager.beginDelayedTransition(bottomControlPanel, transition)
-            routeControlCard.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        val targetVis = if (shouldShow) View.VISIBLE else View.GONE
+        if (routeControlCard.visibility != targetVis) {
+            TransitionManager.endTransitions(bottomControlPanel)
+            routeControlCard.visibility = targetVis
+            bottomControlPanel.requestLayout()
+            rootMainLayout.requestLayout()
         }
 
         val total = if (totalMetersOverride >= 0.0) totalMetersOverride else routeTotalMeters
@@ -829,7 +848,16 @@ class MainActivity : Activity() {
 
     private fun refreshSavedRoutesCount() {
         val count = RouteManager.getSavedRoutes(this).size
-        btnSavedRoutes.text = if (count > 0) "轨迹库 ($count)" else "轨迹库"
+        btnSavedRoutes.text = if (count > 0) "路线库($count)" else "路线库"
+    }
+
+    private fun refreshStrategyToggleBadge() {
+        val checkedCount = listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn).count { it.isChecked }
+        val arrow = if (isStrategyExpanded) "▴" else "▾"
+        btnToggleOptions.text = "策略 $checkedCount/4 $arrow"
+        btnToggleOptions.setTextColor(
+            Color.parseColor(if (isStrategyExpanded) "#1D4ED8" else "#475569")
+        )
     }
 
     private fun showSaveRouteDialog() {
@@ -1164,8 +1192,12 @@ class MainActivity : Activity() {
             }
         }
 
+        val wrappedListener = CompoundButton.OnCheckedChangeListener { buttonView, isChecked ->
+            listener.onCheckedChanged(buttonView, isChecked)
+            refreshStrategyToggleBadge()
+        }
         for (box in listOf(cbSystemMock, cbAntiDrift, cbIptables, cbVpn)) {
-            box.setOnCheckedChangeListener(listener)
+            box.setOnCheckedChangeListener(wrappedListener)
             box.setOnTouchListener(lockedTouchExplain)
         }
     }
@@ -1222,6 +1254,7 @@ class MainActivity : Activity() {
         refreshSavedRoutesCount()
         refreshJoystickButtonUI()
         refreshRoutePanelUI()
+        refreshStrategyToggleBadge()
     }
 
     private fun saveSelectedMode(mode: WorkMode) {
@@ -1574,6 +1607,7 @@ class MainActivity : Activity() {
                 setCheckboxState(cbVpn, enabled = true, label = "VPN阻断(推荐)")
             }
         }
+        refreshStrategyToggleBadge()
     }
 
     private fun handleShizukuConnectAction() {
@@ -2401,7 +2435,7 @@ class MainActivity : Activity() {
 
     private fun refreshFavoritesCount() {
         val count = ConfigManager.getFavorites(this).size
-        btnFavorites.text = if (count > 0) "收藏夹 ($count)" else "收藏夹"
+        btnFavorites.text = if (count > 0) "收藏夹($count)" else "收藏夹"
     }
 
     private fun requestBasicPermissionsIfNeeded() {
@@ -2664,6 +2698,7 @@ class MainActivity : Activity() {
                 suppressCheckboxCallback = true
                 cbVpn.isChecked = false
                 suppressCheckboxCallback = false
+                refreshStrategyToggleBadge()
                 if (isEnabled) {
                     ConfigManager.save(this, buildCurrentConfig(enabled = true), syncTmpWithRoot = false)
                 }
@@ -2792,11 +2827,7 @@ class MainActivity : Activity() {
         val shouldAnimate = animate && stateChanged
 
         if (shouldAnimate) {
-            val transition = AutoTransition().apply {
-                duration = 220L
-                interpolator = DecelerateInterpolator()
-            }
-            TransitionManager.beginDelayedTransition(bottomControlPanel, transition)
+            TransitionManager.endTransitions(bottomControlPanel)
         }
 
         if (isEnabled) {
