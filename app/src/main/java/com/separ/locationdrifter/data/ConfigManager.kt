@@ -19,6 +19,7 @@ object ConfigManager {
     const val PREFS_NAME = "location_config"
     const val TMP_CONFIG_PATH = "/data/local/tmp/location_drifter.json"
     const val SETTINGS_GLOBAL_KEY = "location_drifter_cfg"
+    const val SETTINGS_GLOBAL_HOOKED_BOOT_KEY = "location_drifter_hooked_boot"
 
     const val KEY_ENABLED = "enabled"
     const val KEY_WGS_LAT = "wgs_lat"

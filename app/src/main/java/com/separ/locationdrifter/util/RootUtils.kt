@@ -1,5 +1,8 @@
 package com.separ.locationdrifter.util
 
+import android.app.AppOpsManager
+import android.content.Context
+import android.os.Build
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.Inet4Address
@@ -8,11 +11,12 @@ import java.net.InetAddress
 import java.util.concurrent.Executors
 
 /**
- * Root (su) 命令执行与环境自动化辅助工具
+ * Root (su) 命令执行与环境权限检测工具
  * 所有异步 Root 任务统一通过单线程队列串行调度，消除并发 su 进程竞争。
  */
 object RootUtils {
 
+    private const val OPSTR_MOCK_LOCATION = "android:mock_location"
     private val rootTaskExecutor = Executors.newSingleThreadExecutor()
 
     fun runRootTask(task: () -> Unit) {
@@ -27,6 +31,37 @@ object RootUtils {
 
     fun isRootAvailable(): Boolean {
         return execSu("id").let { it.success && it.stdout.contains("uid=0") }
+    }
+
+    fun rebootDevice(): Boolean {
+        return execSu("svc power reboot || reboot").success
+    }
+
+    /**
+     * 免 Root 环境下检测当前应用是否已被授予模拟位置权限
+     */
+    fun isMockLocationAllowed(context: Context): Boolean {
+        return try {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val uid = android.os.Process.myUid()
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    OPSTR_MOCK_LOCATION,
+                    uid,
+                    context.packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    OPSTR_MOCK_LOCATION,
+                    uid,
+                    context.packageName
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     fun execSu(command: String): CommandResult {
@@ -54,7 +89,7 @@ object RootUtils {
      */
     fun grantMockAndLocationPermissions(packageName: String): Boolean {
         val cmd = """
-            appops set $packageName android:mock_location allow
+            appops set --user 0 $packageName android:mock_location allow 2>/dev/null || appops set $packageName android:mock_location allow
             pm grant $packageName android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
             pm grant $packageName android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true
             pm grant $packageName android.permission.POST_NOTIFICATIONS 2>/dev/null || true
@@ -80,29 +115,60 @@ object RootUtils {
     private const val IPTABLES_CHAIN = "LOC_DRIFT_BLOCK"
 
     /**
-     * 仅针对高频网络定位域名下发内核 REJECT 规则：
-     * 1) 当网络定位请求在内核层收到 REJECT 响应后会立即回落到系统 LocationManager。
-     * 2) 不在内核层一刀切阻断在线逆地理编码接口 (如 isNeedAddress=true 场景)，
-     *    避免强依赖服务端逆地理编码的定位 SDK 因连接被拒直接返回网络异常错误码；
-     *    其余网络定位 SDK 的防漂移由系统层 Wi-Fi/基站/ServiceState 源头隔离保障。
+     * 高频网络定位 SDK 域名列表（覆盖微信内置腾讯定位 SDK、高德/百度网络定位接口）：
+     * 当网络定位请求收到 TCP RST / ICMP Port Unreachable 后会立即回落到系统 LocationManager 虚拟 GPS。
      */
     val LBS_HOSTS = listOf(
         "lbs.map.qq.com",
         "c.map.qq.com",
         "loc.map.qq.com",
-        "datalbs.map.qq.com"
+        "datalbs.map.qq.com",
+        "apis.map.qq.com",
+        "rtt.map.qq.com",
+        "ping.map.qq.com",
+        "pr.map.qq.com",
+        "apilocate.amap.com",
+        "cgicol.amap.com",
+        "loc.map.baidu.com",
+        "ofloc.map.baidu.com"
+    )
+
+    // 微信核心长/短连接及基础业务域名：避免三层 IP 拦截与微信 mmtls 节点冲突导致微信离线
+    val PROTECTED_TENCENT_HOSTS = listOf(
+        "szshort.weixin.qq.com",
+        "szlong.weixin.qq.com",
+        "szextshort.weixin.qq.com",
+        "szminorshort.weixin.qq.com",
+        "short.weixin.qq.com",
+        "long.weixin.qq.com",
+        "dns.weixin.qq.com",
+        "mp.weixin.qq.com",
+        "wx.qq.com",
+        "res.wx.qq.com"
     )
 
     fun enableIptablesBlock(): Boolean {
+        val protectedIps = HashSet<String>()
+        for (host in PROTECTED_TENCENT_HOSTS) {
+            try {
+                InetAddress.getAllByName(host).forEach { addr ->
+                    addr.hostAddress?.substringBefore('%')?.let { protectedIps.add(it) }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
         val ipv4s = LinkedHashSet<String>()
         val ipv6s = LinkedHashSet<String>()
         repeat(2) {
             for (host in LBS_HOSTS) {
                 try {
                     InetAddress.getAllByName(host).forEach { addr ->
+                        val rawIp = addr.hostAddress?.substringBefore('%') ?: return@forEach
+                        if (rawIp in protectedIps) return@forEach
                         when (addr) {
-                            is Inet4Address -> addr.hostAddress?.let { ipv4s.add(it) }
-                            is Inet6Address -> addr.hostAddress?.substringBefore('%')?.let { ipv6s.add(it) }
+                            is Inet4Address -> ipv4s.add(rawIp)
+                            is Inet6Address -> ipv6s.add(rawIp)
                         }
                     }
                 } catch (_: Throwable) {
@@ -135,7 +201,6 @@ object RootUtils {
     ) {
         sb.append("$bin -t filter -N $IPTABLES_CHAIN 2>/dev/null || true\n")
         sb.append("$bin -t filter -F $IPTABLES_CHAIN 2>/dev/null || true\n")
-        // 放行标准 DNS / 私人 DNS (DoT 853) / 本地代理 DNS，避免域名解析本身被误伤
         for (port in listOf(53, 853, 1053)) {
             sb.append("$bin -t filter -A $IPTABLES_CHAIN -p udp --dport $port -j RETURN 2>/dev/null || true\n")
             sb.append("$bin -t filter -A $IPTABLES_CHAIN -p tcp --dport $port -j RETURN 2>/dev/null || true\n")

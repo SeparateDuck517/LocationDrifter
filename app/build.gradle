@@ -15,10 +15,37 @@ android {
         versionName "1.1.0"
     }
 
+    signingConfigs {
+        release {
+            def keystorePath = System.getenv("KEYSTORE_FILE")
+            def storePwd = System.getenv("STORE_PASSWORD")
+            def aliasName = System.getenv("KEY_ALIAS")
+            def keyPwd = System.getenv("KEY_PASSWORD")
+            if (keystorePath != null && !keystorePath.trim().isEmpty()
+                    && storePwd != null && !storePwd.isEmpty()
+                    && aliasName != null && !aliasName.trim().isEmpty()
+                    && keyPwd != null && !keyPwd.isEmpty()) {
+                def ksFile = file(keystorePath.trim())
+                if (ksFile.isFile() && ksFile.length() > 0) {
+                    storeFile ksFile
+                    storePassword storePwd
+                    keyAlias aliasName.trim()
+                    keyPassword keyPwd
+                    enableV1Signing true
+                    enableV2Signing true
+                    enableV3Signing true
+                }
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (signingConfigs.release.storeFile != null) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
             minifyEnabled false
@@ -37,4 +64,6 @@ android {
 
 dependencies {
     compileOnly 'de.robv.android.xposed:api:82'
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
 }

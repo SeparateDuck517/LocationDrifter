@@ -23,10 +23,12 @@ import com.separ.locationdrifter.MainActivity
 import com.separ.locationdrifter.R
 import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.util.RootUtils
+import com.separ.locationdrifter.util.ShizukuHelper
+import java.util.Locale
 import kotlin.random.Random
 
 /**
- * 内置「影梭」核心：持续向系统 LocationManager 注入虚拟位置
+ * 持续向系统 LocationManager 注入虚拟位置（支持 Root、Shizuku 免 Root 自动授权及手动开发者选项授权模式）
  */
 class MockLocationService : Service() {
 
@@ -42,6 +44,10 @@ class MockLocationService : Service() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        @Volatile
+        var isMockingEffective: Boolean = false
+            private set
     }
 
     private lateinit var locationManager: LocationManager
@@ -56,6 +62,10 @@ class MockLocationService : Service() {
             if (!cfg.enabled || !cfg.enableSystemMock) {
                 stopSelf()
                 return
+            }
+            if (activeProviders.isEmpty() && RootUtils.isMockLocationAllowed(this@MockLocationService)) {
+                setupTestProviders()
+                updateNotification(cfg)
             }
             pushLocationToProviders(cfg)
             workerHandler?.postDelayed(this, UPDATE_INTERVAL_MS)
@@ -77,11 +87,17 @@ class MockLocationService : Service() {
             }
             ACTION_UPDATE -> {
                 val cfg = ConfigManager.load(this)
-                updateNotification(cfg)
+                startForegroundSafe(buildNotification(cfg))
                 if (!isRunning && cfg.enabled && cfg.enableSystemMock) {
                     startMocking(cfg)
                 } else {
-                    workerHandler?.post { pushLocationToProviders(cfg) }
+                    workerHandler?.post {
+                        if (activeProviders.isEmpty()) {
+                            setupTestProviders()
+                        }
+                        updateNotification(cfg)
+                        pushLocationToProviders(cfg)
+                    }
                 }
             }
             else -> {
@@ -106,9 +122,16 @@ class MockLocationService : Service() {
         }
 
         workerHandler?.post {
-            // 尝试自动用 Root 放行模拟位置权限
-            RootUtils.grantMockAndLocationPermissions(packageName)
+            // 尚未获得模拟位置权限时，依次尝试 Root (UID 0) 或 Shizuku (UID 2000) 自动放行
+            if (!RootUtils.isMockLocationAllowed(this)) {
+                if (RootUtils.isRootAvailable()) {
+                    RootUtils.grantMockAndLocationPermissions(packageName)
+                } else if (ShizukuHelper.hasPermission()) {
+                    ShizukuHelper.grantMockAndLocationPermissions(this)
+                }
+            }
             setupTestProviders()
+            updateNotification(cfg)
             pushLocationToProviders(cfg)
             workerHandler?.removeCallbacks(pushRunnable)
             workerHandler?.postDelayed(pushRunnable, UPDATE_INTERVAL_MS)
@@ -162,6 +185,7 @@ class MockLocationService : Service() {
             } catch (_: Throwable) {
             }
         }
+        isMockingEffective = activeProviders.isNotEmpty()
     }
 
     private fun pushLocationToProviders(cfg: ConfigManager.DriftConfig) {
@@ -198,6 +222,7 @@ class MockLocationService : Service() {
 
     private fun stopMocking() {
         isRunning = false
+        isMockingEffective = false
         workerHandler?.removeCallbacksAndMessages(null)
         for (provider in activeProviders) {
             try {
@@ -232,7 +257,6 @@ class MockLocationService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (_: SecurityException) {
-            // 若用户未授予任何定位权限，避免服务崩溃
         }
     }
 
@@ -272,13 +296,23 @@ class MockLocationService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = "定位漂移助手运行中"
-        val content = String.format(
-            "目标: %s (%.5f, %.5f)",
-            cfg.address.ifBlank { "已选点" },
-            cfg.gcjLat,
-            cfg.gcjLng
-        )
+        val missingAuth = isRunning && !isMockingEffective && !RootUtils.isMockLocationAllowed(this)
+        val title = if (missingAuth) {
+            "定位漂移助手（等待模拟位置授权）"
+        } else {
+            "定位漂移助手运行中"
+        }
+        val content = if (missingAuth) {
+            "请在系统「开发者选项 → 选择模拟位置信息应用」中选中本应用，或使用 Shizuku 自动授权"
+        } else {
+            String.format(
+                Locale.US,
+                "目标: %s (%.5f, %.5f)",
+                cfg.address.ifBlank { "已选点" },
+                cfg.gcjLat,
+                cfg.gcjLng
+            )
+        }
 
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher)
