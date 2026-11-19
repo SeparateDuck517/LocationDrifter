@@ -317,6 +317,7 @@
         fillOpacity: 0.16
       }).addTo(map);
 
+      attachInteractionGuards();
       marker = L.marker([currentGcjLat, currentGcjLng], { draggable: true }).addTo(map);
 
       marker.on('dragend', function () {
@@ -365,16 +366,73 @@
       notifyNative(gcjLat, gcjLng, label || '已选择位置');
     };
 
+    var smoothAnimId = null;
+    var smoothStartLat = null, smoothStartLng = null;
+    var smoothTargetLat = null, smoothTargetLng = null;
+    var smoothStartTs = 0;
+    var smoothDurationMs = 210;
+    var isUserInteracting = false;
+
+    function attachInteractionGuards() {
+      if (!map) return;
+      map.on('dragstart zoomstart', function () { isUserInteracting = true; });
+      map.on('dragend zoomend', function () { isUserInteracting = false; });
+    }
+
+    function stepSmoothCamera(now) {
+      if (!map || !marker || smoothTargetLat === null) {
+        smoothAnimId = null;
+        return;
+      }
+      var t = Math.min(1, (now - smoothStartTs) / smoothDurationMs);
+      var lat = smoothStartLat + (smoothTargetLat - smoothStartLat) * t;
+      var lng = smoothStartLng + (smoothTargetLng - smoothStartLng) * t;
+      var ll = L.latLng(lat, lng);
+      marker.setLatLng(ll);
+      if (accuracyCircle) accuracyCircle.setLatLng(ll);
+      if (!isUserInteracting) {
+        map.setView(ll, map.getZoom(), { animate: false });
+      }
+      if (t < 1) {
+        smoothAnimId = requestAnimationFrame(stepSmoothCamera);
+      } else {
+        smoothAnimId = null;
+      }
+    }
+
     window.updateLivePosition = function (gcjLat, gcjLng, panIfNeeded) {
       currentGcjLat = gcjLat;
       currentGcjLng = gcjLng;
-      if (map && marker) {
+      if (!map || !marker) return;
+      if (!panIfNeeded) {
         var ll = L.latLng(gcjLat, gcjLng);
         marker.setLatLng(ll);
         if (accuracyCircle) accuracyCircle.setLatLng(ll);
-        if (panIfNeeded && !map.getBounds().pad(-0.15).contains(ll)) {
-          map.panTo(ll, { animate: true, duration: 0.25 });
+        return;
+      }
+      var curPos = marker.getLatLng();
+      var distJump = haversineMeters(curPos.lat, curPos.lng, gcjLat, gcjLng);
+      // 超大跨度瞬移直接定位居中，常规步进使用 60fps 线性插值丝滑锁定屏幕正中心
+      if (distJump > 500) {
+        if (smoothAnimId) {
+          cancelAnimationFrame(smoothAnimId);
+          smoothAnimId = null;
         }
+        var jumpLl = L.latLng(gcjLat, gcjLng);
+        marker.setLatLng(jumpLl);
+        if (accuracyCircle) accuracyCircle.setLatLng(jumpLl);
+        if (!isUserInteracting) {
+          map.setView(jumpLl, map.getZoom(), { animate: false });
+        }
+        return;
+      }
+      smoothStartLat = curPos.lat;
+      smoothStartLng = curPos.lng;
+      smoothTargetLat = gcjLat;
+      smoothTargetLng = gcjLng;
+      smoothStartTs = performance.now();
+      if (!smoothAnimId) {
+        smoothAnimId = requestAnimationFrame(stepSmoothCamera);
       }
     };
 

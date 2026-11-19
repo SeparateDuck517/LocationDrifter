@@ -288,9 +288,9 @@ class JoystickOverlayService : Service() {
         tvSpeedBadge = speedBtn
 
         val lockBtn = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(6), dp(3), dp(6), dp(3))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(2), dp(8), dp(2))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -346,7 +346,7 @@ class JoystickOverlayService : Service() {
     private fun refreshLockButtonUI() {
         val btn = btnLockDirection ?: return
         if (isDirectionLockEnabled) {
-            btn.text = "🔒 已锁"
+            btn.text = "🔒"
             btn.setTextColor(Color.parseColor("#FDE68A"))
             btn.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
@@ -355,7 +355,7 @@ class JoystickOverlayService : Service() {
                 setStroke(dp(1), Color.parseColor("#99F59E0B"))
             }
         } else {
-            btn.text = "🔓 锁定"
+            btn.text = "🔓"
             btn.setTextColor(Color.parseColor("#CBD5E1"))
             btn.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE

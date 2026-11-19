@@ -24,15 +24,27 @@ import android.widget.TextView
 import android.widget.Toast
 import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.data.RouteManager
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /**
- * 侧边栏导航抽屉、参数设置页（速度/海拔/夜间模式）与关于页面的独立控制器。
+ * 侧边栏导航抽屉、参数设置页（速度/海拔/夜间模式）、手动检查更新与关于页面的独立控制器。
  */
 object SidebarController {
 
     private const val GITHUB_REPO_URL = "https://github.com/SeparateDuck517/LocationDrifter"
+    private const val GITHUB_RELEASES_URL = "https://github.com/SeparateDuck517/LocationDrifter/releases"
+    private const val GITHUB_ACTIONS_URL = "https://github.com/SeparateDuck517/LocationDrifter/actions"
+    private const val GITHUB_LATEST_RELEASE_API =
+        "https://api.github.com/repos/SeparateDuck517/LocationDrifter/releases/latest"
     private const val AUTHOR_NAME = "SeparateDuck517"
+
+    private val updateExecutor = Executors.newSingleThreadExecutor()
 
     private class DrawerHandle(
         val panel: View,
@@ -102,6 +114,7 @@ object SidebarController {
         val btnCloseDrawer = activity.findViewById<View>(R.id.btnCloseDrawer)
         val tvDrawerVersion = activity.findViewById<TextView>(R.id.tvDrawerVersion)
         val btnOpenSettings = activity.findViewById<View>(R.id.btnOpenSettings)
+        val btnCheckUpdate = activity.findViewById<View>(R.id.btnCheckUpdate)
         val btnOpenAbout = activity.findViewById<View>(R.id.btnOpenAbout)
 
         tvDrawerVersion?.text = "v${resolveVersionName(activity)}"
@@ -138,6 +151,12 @@ object SidebarController {
             showSettingsDialog(activity, getThemeMode(), onApplyThemeMode)
         }
 
+        btnCheckUpdate?.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            handle.close()
+            checkForUpdates(activity)
+        }
+
         btnOpenAbout?.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             handle.close()
@@ -160,6 +179,113 @@ object SidebarController {
             value.toFloat(),
             context.resources.displayMetrics
         ).toInt()
+    }
+
+    private fun checkForUpdates(activity: Activity) {
+        val currentVersion = resolveVersionName(activity)
+        Toast.makeText(activity, "正在检查更新...", Toast.LENGTH_SHORT).show()
+
+        updateExecutor.execute {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(GITHUB_LATEST_RELEASE_API).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 6000
+                    readTimeout = 6000
+                    instanceFollowRedirects = true
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "LocationDrifter/$currentVersion (Android)")
+                }
+                val code = conn.responseCode
+                if (code == 404) {
+                    activity.runOnUiThread {
+                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                        AlertDialog.Builder(activity)
+                            .setTitle("检查更新")
+                            .setMessage("当前版本：v$currentVersion\n\n仓库暂未发布正式 Release，如需体验最新开发版构建，可前往 GitHub Actions 下载。")
+                            .setPositiveButton("打开 Actions") { _, _ -> openUrl(activity, GITHUB_ACTIONS_URL) }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    }
+                    return@execute
+                }
+                if (code !in 200..299) {
+                    activity.runOnUiThread {
+                        if (!activity.isFinishing && !activity.isDestroyed) {
+                            Toast.makeText(activity, "检查更新失败 (HTTP $code)", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    return@execute
+                }
+
+                val body = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+                val json = JSONObject(body)
+                val tagName = json.optString("tag_name", "").trim()
+                val remoteVersion = tagName.removePrefix("v").removePrefix("V").ifBlank { currentVersion }
+                val releaseUrl = json.optString("html_url", GITHUB_RELEASES_URL).ifBlank { GITHUB_RELEASES_URL }
+                val releaseNotes = json.optString("body", "").trim().ifBlank { "包含最新功能优化与问题修复。" }
+
+                var apkUrl = releaseUrl
+                val assets = json.optJSONArray("assets")
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.optJSONObject(i) ?: continue
+                        val name = asset.optString("name", "")
+                        val dl = asset.optString("browser_download_url", "")
+                        if (name.endsWith(".apk", ignoreCase = true) && dl.isNotBlank()) {
+                            apkUrl = dl
+                            break
+                        }
+                    }
+                }
+
+                val hasNewer = isNewerVersion(remoteVersion, currentVersion)
+                activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    if (hasNewer) {
+                        val preview = if (releaseNotes.length > 360) {
+                            releaseNotes.take(360) + "..."
+                        } else {
+                            releaseNotes
+                        }
+                        AlertDialog.Builder(activity)
+                            .setTitle("发现新版本 v$remoteVersion")
+                            .setMessage("当前版本：v$currentVersion\n最新版本：v$remoteVersion\n\n更新说明：\n$preview")
+                            .setPositiveButton("前往下载") { _, _ -> openUrl(activity, apkUrl) }
+                            .setNeutralButton("查看发布页") { _, _ -> openUrl(activity, releaseUrl) }
+                            .setNegativeButton("稍后再说", null)
+                            .show()
+                    } else {
+                        AlertDialog.Builder(activity)
+                            .setTitle("已是最新版本")
+                            .setMessage("当前版本 v$currentVersion 已是最新正式版（GitHub 最新 Release：v$remoteVersion）。")
+                            .setPositiveButton("查看 Releases") { _, _ -> openUrl(activity, releaseUrl) }
+                            .setNegativeButton("确定", null)
+                            .show()
+                    }
+                }
+            } catch (_: Throwable) {
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        Toast.makeText(activity, "检查更新失败，请检查网络连接", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
+    private fun isNewerVersion(remote: String, local: String): Boolean {
+        val rParts = remote.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
+        val lParts = local.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
+        val maxLen = maxOf(rParts.size, lParts.size)
+        for (i in 0 until maxLen) {
+            val rv = rParts.getOrElse(i) { 0 }
+            val lv = lParts.getOrElse(i) { 0 }
+            if (rv != lv) return rv > lv
+        }
+        return false
     }
 
     private fun showSettingsDialog(
@@ -339,7 +465,7 @@ object SidebarController {
                 typeface = if (isLink) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
                 setPadding(0, dp(activity, 2), 0, 0)
                 if (isLink) {
-                    setOnClickListener { openGitHubRepo(activity) }
+                    setOnClickListener { openUrl(activity, GITHUB_REPO_URL) }
                 }
             }
             row.addView(tvLabel)
@@ -365,7 +491,7 @@ object SidebarController {
             .setTitle("关于 LocationDrifter")
             .setView(root)
             .setPositiveButton("打开 GitHub") { _, _ ->
-                openGitHubRepo(activity)
+                openUrl(activity, GITHUB_REPO_URL)
             }
             .setNeutralButton("复制链接") { _, _ ->
                 try {
@@ -379,12 +505,12 @@ object SidebarController {
             .show()
     }
 
-    private fun openGitHubRepo(activity: Activity) {
+    private fun openUrl(activity: Activity, url: String) {
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
             activity.startActivity(intent)
         } catch (_: Throwable) {
-            Toast.makeText(activity, "无法打开浏览器，请长按或复制链接访问", Toast.LENGTH_SHORT).show()
+            Toast.makeText(activity, "无法打开浏览器，请复制链接访问", Toast.LENGTH_SHORT).show()
         }
     }
 }
