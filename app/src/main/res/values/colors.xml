@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_canvas">#F1F5F9</color>
+    <color name="map_bg">#E2E8F0</color>
+    <color name="surface_header">#FFFFFF</color>
+    <color name="surface_sheet">#FFFFFF</color>
+    <color name="surface_floating">#FFFFFF</color>
+    <color name="surface_card">#F8FAFC</color>
+    <color name="border_subtle">#E2E8F0</color>
+    <color name="border_floating">#CBD5E1</color>
+
+    <color name="text_primary">#0F172A</color>
+    <color name="text_body">#1E293B</color>
+    <color name="text_secondary">#475569</color>
+    <color name="text_muted">#64748B</color>
+    <color name="text_hint">#94A3B8</color>
+
+    <color name="accent_blue">#2563EB</color>
+    <color name="accent_blue_text">#1D4ED8</color>
+    <color name="accent_red">#DC2626</color>
+    <color name="accent_emerald">#059669</color>
+    <color name="accent_amber">#D97706</color>
+
+    <color name="btn_secondary_bg">#EFF6FF</color>
+    <color name="btn_secondary_border">#BFDBFE</color>
+
+    <color name="chip_disabled_bg">#F1F5F9</color>
+    <color name="chip_checked_bg">#EFF6FF</color>
+    <color name="chip_checked_border">#60A5FA</color>
+    <color name="chip_normal_bg">#F8FAFC</color>
+
+    <color name="warning_bg">#FFFBEB</color>
+    <color name="warning_border">#FDE68A</color>
+    <color name="warning_title">#92400E</color>
+    <color name="warning_desc">#78350F</color>
+</resources>

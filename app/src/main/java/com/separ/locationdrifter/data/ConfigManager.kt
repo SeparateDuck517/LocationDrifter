@@ -8,9 +8,10 @@ import com.separ.locationdrifter.util.RootUtils
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import kotlin.random.Random
 
 /**
- * 统一管理当前选点坐标、开关状态与收藏地点，同时异步同步到：
+ * 统一管理当前选点坐标、开关状态、实验性步数模拟、海拔高度与收藏地点，同时异步同步到：
  * 1) Settings.Global (system_server 等系统进程零延迟实时读取)
  * 2) LSPosed MODE_WORLD_READABLE SharedPreferences
  * 3) /data/local/tmp/location_drifter.json (通过 RootUtils 串行队列落盘兜底)
@@ -21,6 +22,7 @@ object ConfigManager {
     const val TMP_CONFIG_PATH = "/data/local/tmp/location_drifter.json"
     const val SETTINGS_GLOBAL_KEY = "location_drifter_cfg"
     const val SETTINGS_GLOBAL_HOOKED_BOOT_KEY = "location_drifter_hooked_boot"
+    const val SETTINGS_GLOBAL_STEP_GUARD_KEY = "location_drifter_step_hook_guard"
 
     const val KEY_ENABLED = "enabled"
     const val KEY_WGS_LAT = "wgs_lat"
@@ -33,8 +35,12 @@ object ConfigManager {
     const val KEY_ENABLE_IPTABLES = "enable_iptables"
     const val KEY_ENABLE_VPN = "enable_vpn"
     const val KEY_JITTER = "enable_jitter"
+    const val KEY_ENABLE_STEP_SIM = "enable_step_sim"
+    const val KEY_SIM_STEP_COUNT = "sim_step_count"
     const val KEY_FAVORITES = "favorites"
+    const val KEY_ALTITUDE = "altitude"
     const val KEY_UPDATED_AT = "updated_at"
+    const val DEFAULT_ALTITUDE = 36.0
 
     private const val DEFAULT_GCJ_LAT = 39.908823
     private const val DEFAULT_GCJ_LNG = 116.397470
@@ -45,6 +51,14 @@ object ConfigManager {
 
     @Volatile
     private var cachedPrefsPair: Pair<SharedPreferences, Boolean>? = null
+
+    @Volatile
+    private var lastRootTmpSyncMs: Long = 0L
+
+    private var fractionalStepAccumulator: Double = 0.0
+
+    @Volatile
+    private var cachedAltitudeMeters: Double = DEFAULT_ALTITUDE
 
     data class DriftConfig(
         val enabled: Boolean,
@@ -58,7 +72,9 @@ object ConfigManager {
         val enableIptables: Boolean,
         val enableVpn: Boolean,
         val enableJitter: Boolean,
-        val updatedAt: Long
+        val updatedAt: Long,
+        val enableStepSim: Boolean = false,
+        val simStepCount: Long = 0L
     )
 
     data class FavoriteSpot(
@@ -103,7 +119,9 @@ object ConfigManager {
             enableIptables = prefs.getBoolean(KEY_ENABLE_IPTABLES, true),
             enableVpn = prefs.getBoolean(KEY_ENABLE_VPN, false),
             enableJitter = prefs.getBoolean(KEY_JITTER, true),
-            updatedAt = prefs.getLong(KEY_UPDATED_AT, 0L)
+            updatedAt = prefs.getLong(KEY_UPDATED_AT, 0L),
+            enableStepSim = prefs.getBoolean(KEY_ENABLE_STEP_SIM, false),
+            simStepCount = prefs.getLong(KEY_SIM_STEP_COUNT, 0L)
         )
     }
 
@@ -111,7 +129,6 @@ object ConfigManager {
         val appCtx = context.applicationContext ?: context
         val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
         val now = System.currentTimeMillis()
-        // 使用 apply() 立即更新内存状态并异步落盘，避免主线程 fsync 卡顿
         prefs.edit()
             .putBoolean(KEY_ENABLED, config.enabled)
             .putString(KEY_WGS_LAT, config.wgsLat.toString())
@@ -124,6 +141,8 @@ object ConfigManager {
             .putBoolean(KEY_ENABLE_IPTABLES, config.enableIptables)
             .putBoolean(KEY_ENABLE_VPN, config.enableVpn)
             .putBoolean(KEY_JITTER, config.enableJitter)
+            .putBoolean(KEY_ENABLE_STEP_SIM, config.enableStepSim)
+            .putLong(KEY_SIM_STEP_COUNT, config.simStepCount)
             .putLong(KEY_UPDATED_AT, now)
             .apply()
 
@@ -142,6 +161,115 @@ object ConfigManager {
         }
     }
 
+    /**
+     * 按移动距离与速度区间换算自然步数增量（实验性步数模拟）：
+     * - 步行 / 跑步区间 (0.4 ~ 6.2 m/s) 自动按配速换算步幅并叠加微小自然抖动；
+     * - 骑行 (>= 6.5 m/s) 与驾车模式默认不累加步数，避免运动风控异常。
+     */
+    @Synchronized
+    fun accumulateSimulatedSteps(
+        context: Context,
+        distanceMeters: Double,
+        speedMps: Float
+    ): Long {
+        if (distanceMeters <= 0.0) return 0L
+        val appCtx = context.applicationContext ?: context
+        val current = load(appCtx)
+        if (!current.enabled || !current.enableStepSim) return current.simStepCount
+
+        // 仅步行与跑步速度区间计步；骑行与驾车不累加步数
+        if (speedMps < 0.4f || speedMps > 6.2f) return current.simStepCount
+
+        val strideMeters = (0.68 + (speedMps.toDouble() - 1.2).coerceAtLeast(0.0) * 0.24)
+            .coerceIn(0.68, 1.42)
+        val jitter = Random.nextDouble(0.95, 1.05)
+        fractionalStepAccumulator += (distanceMeters / strideMeters) * jitter
+
+        val wholeSteps = fractionalStepAccumulator.toLong()
+        if (wholeSteps <= 0L) return current.simStepCount
+        fractionalStepAccumulator -= wholeSteps.toDouble()
+
+        val newTotal = current.simStepCount + wholeSteps
+        val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
+        prefs.edit().putLong(KEY_SIM_STEP_COUNT, newTotal).apply()
+        return newTotal
+    }
+
+    /**
+     * 高频实时移动（摇杆 / 轨迹模拟）专用轻量坐标更新：
+     * 仅更新坐标、步数与时间戳，异步写入 Settings.Global（供 system_server 实时读取），
+     * 并对 Root 兜底文件写入进行 1.2s 节流，避免高频拉起 su 子进程。
+     */
+    fun updateLiveCoordinates(
+        context: Context,
+        wgsLat: Double,
+        wgsLng: Double,
+        gcjLat: Double,
+        gcjLng: Double,
+        address: String? = null
+    ): DriftConfig {
+        val appCtx = context.applicationContext ?: context
+        val current = load(appCtx)
+        val now = System.currentTimeMillis()
+        val updated = current.copy(
+            wgsLat = wgsLat,
+            wgsLng = wgsLng,
+            gcjLat = gcjLat,
+            gcjLng = gcjLng,
+            address = address ?: current.address,
+            updatedAt = now
+        )
+        val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
+        prefs.edit()
+            .putString(KEY_WGS_LAT, updated.wgsLat.toString())
+            .putString(KEY_WGS_LNG, updated.wgsLng.toString())
+            .putString(KEY_GCJ_LAT, updated.gcjLat.toString())
+            .putString(KEY_GCJ_LNG, updated.gcjLng.toString())
+            .putString(KEY_ADDRESS, updated.address)
+            .putLong(KEY_UPDATED_AT, now)
+            .apply()
+
+        val json = toJson(updated).toString()
+        settingsSyncExecutor.execute {
+            try {
+                Settings.Global.putString(appCtx.contentResolver, SETTINGS_GLOBAL_KEY, json)
+            } catch (_: Throwable) {
+            }
+        }
+
+        if (updated.enabled && updated.blockNetworkDrift && now - lastRootTmpSyncMs >= 1200L) {
+            lastRootTmpSyncMs = now
+            RootUtils.runRootTask {
+                RootUtils.writeTmpConfigJson(json)
+            }
+        }
+        return updated
+    }
+
+    fun getAltitude(context: Context): Double {
+        val (prefs, _) = getPrefsAndWorldReadableState(context)
+        val value = prefs.getString(KEY_ALTITUDE, null)?.toDoubleOrNull() ?: DEFAULT_ALTITUDE
+        val clamped = value.coerceIn(-500.0, 9000.0)
+        cachedAltitudeMeters = clamped
+        return clamped
+    }
+
+    fun setAltitude(context: Context, altitudeMeters: Double) {
+        val appCtx = context.applicationContext ?: context
+        val clamped = altitudeMeters.coerceIn(-500.0, 9000.0)
+        cachedAltitudeMeters = clamped
+        val (prefs, _) = getPrefsAndWorldReadableState(appCtx)
+        prefs.edit().putString(KEY_ALTITUDE, clamped.toString()).apply()
+        val current = load(appCtx)
+        val json = toJson(current.copy(updatedAt = System.currentTimeMillis())).toString()
+        settingsSyncExecutor.execute {
+            try {
+                Settings.Global.putString(appCtx.contentResolver, SETTINGS_GLOBAL_KEY, json)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     fun toJson(config: DriftConfig): JSONObject {
         return JSONObject().apply {
             put(KEY_ENABLED, config.enabled)
@@ -152,6 +280,9 @@ object ConfigManager {
             put(KEY_ADDRESS, config.address)
             put(KEY_BLOCK_NETWORK_DRIFT, config.blockNetworkDrift)
             put(KEY_JITTER, config.enableJitter)
+            put(KEY_ENABLE_STEP_SIM, config.enableStepSim)
+            put(KEY_SIM_STEP_COUNT, config.simStepCount)
+            put(KEY_ALTITUDE, cachedAltitudeMeters)
             put(KEY_UPDATED_AT, config.updatedAt)
         }
     }
