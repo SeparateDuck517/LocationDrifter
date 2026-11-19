@@ -22,11 +22,12 @@ import android.widget.TextView
 import android.widget.Toast
 import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.data.RouteManager
+import com.separ.locationdrifter.util.RealLocationHelper
 import java.util.WeakHashMap
 
 /**
  * 全局应用入口：负责初始化自定义速度/海拔配置、夜间模式（跟随系统 / 夜间 / 浅色）、
- * 侧边栏与设置/关于页面挂载、系统栏着色、暗色地图同步及所有弹窗深色适配。
+ * 侧边栏与设置/关于页面挂载、系统栏着色、暗色地图同步、弹窗深色适配及启动自动定位当前位置。
  */
 class LocationDrifterApp : Application() {
 
@@ -69,6 +70,7 @@ class LocationDrifterApp : Application() {
 
     private val wiredActivities = WeakHashMap<Activity, Boolean>()
     private val adaptedDialogRoots = WeakHashMap<View, Boolean>()
+    private val autoLocatedActivities = WeakHashMap<Activity, Boolean>()
 
     override fun onCreate() {
         super.onCreate()
@@ -108,6 +110,7 @@ class LocationDrifterApp : Application() {
                 applySystemBars(activity, dark)
                 updateThemeToggleLabel(activity, mode)
                 syncWebMapTheme(activity, dark)
+                tryAutoLocateOnStartup(activity)
             }
 
             override fun onActivityPaused(activity: Activity) = Unit
@@ -115,6 +118,7 @@ class LocationDrifterApp : Application() {
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
             override fun onActivityDestroyed(activity: Activity) {
                 wiredActivities.remove(activity)
+                autoLocatedActivities.remove(activity)
             }
         })
     }
@@ -138,10 +142,32 @@ class LocationDrifterApp : Application() {
             getThemeMode = { getSavedThemeMode(activity) },
             onApplyThemeMode = { targetMode -> switchThemeMode(activity, targetMode) }
         )
+        wireLocateMeButton(activity)
         syncWebMapTheme(activity, dark)
+        tryAutoLocateOnStartup(activity)
         if (dark) {
             attachDarkModeAdapter(activity)
         }
+    }
+
+    private fun wireLocateMeButton(activity: Activity) {
+        val btn = activity.findViewById<View>(R.id.btnLocateMe) ?: return
+        btn.setOnClickListener { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            RealLocationHelper.locateCurrentPosition(activity, silent = false)
+        }
+    }
+
+    private fun tryAutoLocateOnStartup(activity: Activity) {
+        if (autoLocatedActivities[activity] == true) return
+        if (!RealLocationHelper.hasLocationPermission(activity)) return
+        val cfg = ConfigManager.load(activity)
+        if (cfg.enabled) {
+            autoLocatedActivities[activity] = true
+            return
+        }
+        autoLocatedActivities[activity] = true
+        RealLocationHelper.locateCurrentPosition(activity, silent = true)
     }
 
     private fun getSavedThemeMode(context: Context): Int {
