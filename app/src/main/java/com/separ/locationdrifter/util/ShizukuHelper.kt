@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.IBinder
 import android.provider.Settings
+import org.json.JSONArray
+import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
 import java.io.BufferedReader
@@ -15,18 +17,28 @@ import java.util.concurrent.Executors
 
 /**
  * 免 Root Shizuku (UID 2000 ADB Shell) 特权通道辅助工具：
- * 1) 优先通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION，并辅以多格式 appops 命令兜底，
- *    自动放行模拟位置与定位/通知权限，免去手动配置开发者选项；
- * 2) 在开启定位漂移期间自动临时关闭系统后台 Wi-Fi / 蓝牙扫描减少坐标回弹，停止漂移后自动还原。
+ * 1) 通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION，并辅以多格式 appops 命令兜底；
+ * 2) 合并执行系统后台 Wi-Fi / 蓝牙扫描关闭与指定应用包名的扫描权限隔离，减少重复 Shell 进程创建开销。
  */
 object ShizukuHelper {
 
     const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+
     private const val SCAN_BACKUP_PREFS = "shizuku_scan_backup"
     private const val KEY_HAS_BACKUP = "has_backup"
     private const val KEY_ORIG_WIFI_SCAN = "orig_wifi_scan"
     private const val KEY_ORIG_BLE_SCAN = "orig_ble_scan"
+
+    private const val TARGET_APPS_PREFS = "shizuku_target_apps_prefs"
+    private const val KEY_TARGET_PACKAGES = "target_packages_json"
+    private const val KEY_APPOPS_BACKUP_MAP = "appops_backup_map_json"
+
     private const val OP_MOCK_LOCATION_CODE = 58
+
+    private val TARGET_ISOLATED_OPS = listOf(
+        "android:wifi_scan",
+        "android:bluetooth_scan"
+    )
 
     private val shizukuExecutor = Executors.newSingleThreadExecutor()
 
@@ -98,9 +110,6 @@ object ShizukuHelper {
         }
     }
 
-    /**
-     * 通过 Shizuku 特权进程执行 Shell 命令（兼容 Shizuku API 13.x）
-     */
     fun execShizuku(command: String): RootUtils.CommandResult {
         if (!hasPermission()) {
             return RootUtils.CommandResult(false, "", "Shizuku not authorized")
@@ -137,9 +146,6 @@ object ShizukuHelper {
         }
     }
 
-    /**
-     * 通过 ShizukuBinderWrapper 直连系统 IAppOpsService 授予 OP_MOCK_LOCATION（与系统开发者选项同源）
-     */
     private fun grantMockLocationViaBinder(context: Context): Boolean {
         if (!hasPermission()) return false
         return try {
@@ -199,20 +205,17 @@ object ShizukuHelper {
         }
     }
 
-    /**
-     * 免 Root 自动授权模拟位置与定位/通知权限，并以实际 AppOpsManager 检测结果作为最终返回值
-     */
     fun grantMockAndLocationPermissions(context: Context): Boolean {
         if (!hasPermission()) return RootUtils.isMockLocationAllowed(context)
+        if (RootUtils.isMockLocationAllowed(context)) return true
+
         val packageName = context.packageName
         val uid = android.os.Process.myUid()
 
-        // 1. 优先尝试 Binder 直连 IAppOpsService 授予模拟位置权限
-        if (!RootUtils.isMockLocationAllowed(context)) {
-            grantMockLocationViaBinder(context)
+        if (grantMockLocationViaBinder(context)) {
+            return true
         }
 
-        // 2. 补充多格式 shell appops 与运行时定位/通知权限授权
         val cmd = """
             cmd appops set --user 0 $packageName android:mock_location allow 2>/dev/null || true
             appops set --user 0 $packageName android:mock_location allow 2>/dev/null || true
@@ -228,11 +231,41 @@ object ShizukuHelper {
         return RootUtils.isMockLocationAllowed(context)
     }
 
-    /**
-     * 漂移期间自动临时关闭系统 Wi-Fi 扫描与蓝牙扫描，显著减少免 Root 下的室内坐标回弹
-     */
-    fun applyAntiDriftScanSuppression(context: Context): Boolean {
-        if (!hasPermission()) return false
+    fun getTargetApps(context: Context): List<String> {
+        val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_TARGET_PACKAGES, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            val list = ArrayList<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val pkg = arr.optString(i).trim()
+                if (pkg.isNotEmpty() && pkg !in list) {
+                    list.add(pkg)
+                }
+            }
+            list
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    fun setTargetApps(context: Context, packages: List<String>) {
+        val arr = JSONArray()
+        packages.map { it.trim() }.filter { it.isNotEmpty() }.distinct().forEach {
+            arr.put(it)
+        }
+        context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_TARGET_PACKAGES, arr.toString())
+            .apply()
+    }
+
+    fun getTargetAppsSummary(context: Context): String {
+        val list = getTargetApps(context)
+        return if (list.isEmpty()) "未配置" else "已选 ${list.size} 项"
+    }
+
+    private fun buildScanSuppressionScript(context: Context): String {
         val prefs = context.getSharedPreferences(SCAN_BACKUP_PREFS, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(KEY_HAS_BACKUP, false)) {
             val origWifi = try {
@@ -251,16 +284,130 @@ object ShizukuHelper {
                 .putInt(KEY_ORIG_BLE_SCAN, origBle)
                 .apply()
         }
-        val cmd = """
+        return """
             settings put global wifi_scan_always_enabled 0 2>/dev/null || cmd settings put global wifi_scan_always_enabled 0 2>/dev/null || true
             settings put global ble_scan_always_enabled 0 2>/dev/null || cmd settings put global ble_scan_always_enabled 0 2>/dev/null || true
+            cmd wifi set-scan-always-available disabled 2>/dev/null || true
         """.trimIndent()
-        return execShizuku(cmd).success
+    }
+
+    private fun buildTargetIsolationScript(
+        context: Context,
+        packages: List<String>
+    ): Pair<String, Int> {
+        if (packages.isEmpty()) return "" to 0
+        val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
+        val backupJson = try {
+            JSONObject(prefs.getString(KEY_APPOPS_BACKUP_MAP, "{}") ?: "{}")
+        } catch (_: Throwable) {
+            JSONObject()
+        }
+
+        val pm = context.packageManager
+        val cmdBuilder = StringBuilder()
+        var isolatedCount = 0
+
+        for (rawPkg in packages) {
+            val pkg = rawPkg.trim()
+            if (pkg.isEmpty() || pkg == context.packageName) continue
+            val installed = try {
+                pm.getPackageInfo(pkg, 0)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            if (!installed) continue
+
+            for (op in TARGET_ISOLATED_OPS) {
+                val key = "$pkg|$op"
+                if (!backupJson.has(key)) {
+                    backupJson.put(key, "default")
+                }
+                cmdBuilder.append("cmd appops set --user 0 $pkg $op ignore 2>/dev/null || appops set $pkg $op ignore 2>/dev/null || true\n")
+            }
+            isolatedCount++
+        }
+
+        prefs.edit().putString(KEY_APPOPS_BACKUP_MAP, backupJson.toString()).apply()
+        return cmdBuilder.toString() to isolatedCount
     }
 
     /**
-     * 停止漂移时按备份恢复系统 Wi-Fi 扫描与蓝牙扫描开关状态
+     * 单次 Shizuku Shell 批量执行扫描压制与目标应用隔离，消除重复进程拉起延迟
      */
+    fun applyBatchAntiDrift(
+        context: Context,
+        suppressScan: Boolean,
+        isolateTargets: Boolean
+    ): Int {
+        if (!hasPermission()) return 0
+        val sb = StringBuilder()
+        if (suppressScan) {
+            sb.append(buildScanSuppressionScript(context)).append('\n')
+        }
+        var count = 0
+        if (isolateTargets) {
+            val (script, isolatedCount) = buildTargetIsolationScript(context, getTargetApps(context))
+            count = isolatedCount
+            if (script.isNotEmpty()) {
+                sb.append(script).append('\n')
+            }
+        }
+        if (sb.isNotEmpty()) {
+            execShizuku(sb.toString())
+        }
+        return count
+    }
+
+    fun applyTargetAppLocationIsolation(
+        context: Context,
+        packages: List<String> = getTargetApps(context)
+    ): Int {
+        if (!hasPermission() || packages.isEmpty()) return 0
+        val (script, count) = buildTargetIsolationScript(context, packages)
+        if (script.isNotEmpty()) {
+            execShizuku(script)
+        }
+        return count
+    }
+
+    fun restoreTargetAppLocationIsolation(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
+        val rawMap = prefs.getString(KEY_APPOPS_BACKUP_MAP, null)
+        if (rawMap.isNullOrBlank() || rawMap == "{}") return true
+        if (!hasPermission()) return false
+
+        val backupJson = try {
+            JSONObject(rawMap)
+        } catch (_: Throwable) {
+            prefs.edit().remove(KEY_APPOPS_BACKUP_MAP).apply()
+            return true
+        }
+
+        val cmdBuilder = StringBuilder()
+        val keys = backupJson.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val parts = key.split("|")
+            if (parts.size != 2) continue
+            val pkg = parts[0]
+            val op = parts[1]
+            val origMode = backupJson.optString(key, "default").ifBlank { "default" }
+            cmdBuilder.append("cmd appops set --user 0 $pkg $op $origMode 2>/dev/null || appops set $pkg $op $origMode 2>/dev/null || true\n")
+        }
+
+        if (cmdBuilder.isNotEmpty()) {
+            execShizuku(cmdBuilder.toString())
+        }
+        prefs.edit().remove(KEY_APPOPS_BACKUP_MAP).apply()
+        return true
+    }
+
+    fun applyAntiDriftScanSuppression(context: Context): Boolean {
+        if (!hasPermission()) return false
+        return execShizuku(buildScanSuppressionScript(context)).success
+    }
+
     fun restoreAntiDriftScanSuppression(context: Context): Boolean {
         val prefs = context.getSharedPreferences(SCAN_BACKUP_PREFS, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(KEY_HAS_BACKUP, false)) return true
@@ -269,10 +416,54 @@ object ShizukuHelper {
         prefs.edit().putBoolean(KEY_HAS_BACKUP, false).apply()
 
         if (!hasPermission()) return false
+        val wifiStateWord = if (origWifi == 1) "enabled" else "disabled"
         val cmd = """
             settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || cmd settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || true
             settings put global ble_scan_always_enabled $origBle 2>/dev/null || cmd settings put global ble_scan_always_enabled $origBle 2>/dev/null || true
+            cmd wifi set-scan-always-available $wifiStateWord 2>/dev/null || true
         """.trimIndent()
         return execShizuku(cmd).success
+    }
+
+    fun restoreAllAntiDriftStates(context: Context) {
+        val scanPrefs = context.getSharedPreferences(SCAN_BACKUP_PREFS, Context.MODE_PRIVATE)
+        val targetPrefs = context.getSharedPreferences(TARGET_APPS_PREFS, Context.MODE_PRIVATE)
+        val hasScanBackup = scanPrefs.getBoolean(KEY_HAS_BACKUP, false)
+        val rawMap = targetPrefs.getString(KEY_APPOPS_BACKUP_MAP, null)
+        val hasTargetBackup = !rawMap.isNullOrBlank() && rawMap != "{}"
+        if (!hasScanBackup && !hasTargetBackup) return
+
+        val sb = StringBuilder()
+        if (hasScanBackup) {
+            val origWifi = scanPrefs.getInt(KEY_ORIG_WIFI_SCAN, 1)
+            val origBle = scanPrefs.getInt(KEY_ORIG_BLE_SCAN, 1)
+            scanPrefs.edit().putBoolean(KEY_HAS_BACKUP, false).apply()
+            val wifiStateWord = if (origWifi == 1) "enabled" else "disabled"
+            sb.append(
+                """
+                settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || cmd settings put global wifi_scan_always_enabled $origWifi 2>/dev/null || true
+                settings put global ble_scan_always_enabled $origBle 2>/dev/null || cmd settings put global ble_scan_always_enabled $origBle 2>/dev/null || true
+                cmd wifi set-scan-always-available $wifiStateWord 2>/dev/null || true
+                """.trimIndent()
+            ).append('\n')
+        }
+        if (hasTargetBackup) {
+            targetPrefs.edit().remove(KEY_APPOPS_BACKUP_MAP).apply()
+            runCatching {
+                val backupJson = JSONObject(rawMap!!)
+                val keys = backupJson.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val parts = key.split("|")
+                    if (parts.size == 2) {
+                        val origMode = backupJson.optString(key, "default").ifBlank { "default" }
+                        sb.append("cmd appops set --user 0 ${parts[0]} ${parts[1]} $origMode 2>/dev/null || appops set ${parts[0]} ${parts[1]} $origMode 2>/dev/null || true\n")
+                    }
+                }
+            }
+        }
+        if (hasPermission() && sb.isNotEmpty()) {
+            execShizuku(sb.toString())
+        }
     }
 }
