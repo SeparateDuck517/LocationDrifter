@@ -167,9 +167,9 @@ object SidebarController {
     private fun resolveVersionName(context: Context): String {
         return try {
             val info = context.packageManager.getPackageInfo(context.packageName, 0)
-            info.versionName?.takeIf { it.isNotBlank() } ?: "1.2.0"
+            info.versionName?.takeIf { it.isNotBlank() } ?: "1.3.0"
         } catch (_: Throwable) {
-            "1.2.0"
+            "1.3.0"
         }
     }
 

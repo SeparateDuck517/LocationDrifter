@@ -676,7 +676,7 @@
                         android:paddingTop="1dp"
                         android:paddingEnd="6dp"
                         android:paddingBottom="1dp"
-                        android:text="v1.2.0"
+                        android:text="v1.3.0"
                         android:textColor="@color/text_muted"
                         android:textSize="10sp"
                         android:textStyle="bold" />
