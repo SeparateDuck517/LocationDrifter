@@ -107,6 +107,9 @@ class MockLocationService : Service() {
         @Volatile
         private var activeRouteCache: List<RouteManager.RoutePoint> = emptyList()
 
+        @Volatile
+        private var activeInstance: MockLocationService? = null
+
         private val mainHandler = Handler(Looper.getMainLooper())
         private val positionListeners = CopyOnWriteArraySet<PositionListener>()
         private val routeStateListeners = CopyOnWriteArraySet<RouteStateListener>()
@@ -131,6 +134,26 @@ class MockLocationService : Service() {
             liveSpeedMps = speedMps
             liveBearingDeg = bearingDeg
             liveMotionActive = active
+        }
+
+        /**
+         * 供悬浮摇杆在后台实时触发即时位置注入，不等待下一次定时轮询
+         */
+        fun pushLiveLocationNow(wgsLat: Double, wgsLng: Double, speedMps: Float, bearingDeg: Float) {
+            liveSpeedMps = speedMps
+            liveBearingDeg = bearingDeg
+            liveMotionActive = true
+            val svc = activeInstance ?: return
+            svc.workerHandler?.post {
+                if (!isRunning) return@post
+                val cfg = ConfigManager.load(svc).copy(wgsLat = wgsLat, wgsLng = wgsLng)
+                if (!RootUtils.isSystemServerHookActive(svc)) {
+                    if (svc.activeProviders.isEmpty() && RootUtils.isMockLocationAllowed(svc)) {
+                        svc.setupTestProviders()
+                    }
+                    svc.pushLocationToProviders(cfg)
+                }
+            }
         }
 
         fun pauseRoutePlayback() {
@@ -232,6 +255,7 @@ class MockLocationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         createNotificationChannel()
     }
@@ -595,6 +619,7 @@ class MockLocationService : Service() {
     }
 
     override fun onDestroy() {
+        if (activeInstance === this) activeInstance = null
         stopMocking()
         super.onDestroy()
     }

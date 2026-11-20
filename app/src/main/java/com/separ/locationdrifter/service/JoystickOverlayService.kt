@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
@@ -24,6 +25,7 @@ import com.separ.locationdrifter.data.RouteManager
 import com.separ.locationdrifter.ui.JoystickPadView
 import com.separ.locationdrifter.util.CoordTransform
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.abs
 
 /**
@@ -43,6 +45,29 @@ class JoystickOverlayService : Service() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        private val mainUiHandler = Handler(Looper.getMainLooper())
+        private val runningStateListeners = CopyOnWriteArraySet<(Boolean) -> Unit>()
+
+        fun addRunningStateListener(listener: (Boolean) -> Unit) {
+            runningStateListeners.add(listener)
+        }
+
+        fun removeRunningStateListener(listener: (Boolean) -> Unit) {
+            runningStateListeners.remove(listener)
+        }
+
+        private fun notifyRunningState(running: Boolean) {
+            if (runningStateListeners.isEmpty()) return
+            mainUiHandler.post {
+                for (l in runningStateListeners) {
+                    try {
+                        l(running)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+        }
     }
 
     private var windowManager: WindowManager? = null
@@ -53,7 +78,6 @@ class JoystickOverlayService : Service() {
     private var tvDragHandle: TextView? = null
     private var tvSpeedBadge: TextView? = null
     private var btnLockDirection: TextView? = null
-    private var tvHeadingInfo: TextView? = null
     private var btnCollapse: TextView? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -63,6 +87,7 @@ class JoystickOverlayService : Service() {
     private var isCollapsed = false
     private var isDirectionLockEnabled = false
     private var speedMps = 4.0f
+    private var lastStepElapsedMs = 0L
 
     private val stepRunnable = object : Runnable {
         override fun run() {
@@ -89,7 +114,7 @@ class JoystickOverlayService : Service() {
             isDirectionLockEnabled = false
             showOverlay()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -151,7 +176,8 @@ class JoystickOverlayService : Service() {
             setTextColor(Color.parseColor("#E2E8F0"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(4), dp(2), dp(8), dp(2))
+            maxLines = 1
+            setPadding(dp(4), dp(2), dp(6), dp(2))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         tvDragHandle = dragHandleView
@@ -224,7 +250,7 @@ class JoystickOverlayService : Service() {
         }
         dragHandleView.setOnTouchListener(dragListener)
 
-        // 主体：摇杆盘 + 速度/锁定控制条 + 航向读数
+        // 主体：摇杆盘 + 速度/纯图标方向锁控制条
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -239,6 +265,7 @@ class JoystickOverlayService : Service() {
                 currentDy = dy
                 if (active && !joystickActive) {
                     joystickActive = true
+                    lastStepElapsedMs = SystemClock.elapsedRealtime()
                     // 摇杆手动接管时自动暂停轨迹自动巡航，避免位置冲突
                     if (MockLocationService.isRoutePlaying) {
                         MockLocationService.pauseRoutePlayback()
@@ -249,7 +276,7 @@ class JoystickOverlayService : Service() {
                     joystickActive = false
                     mainHandler.removeCallbacks(stepRunnable)
                     MockLocationService.setLiveMotion(0f, 0f, false)
-                    refreshIdleHeadingText()
+                    refreshHeaderTitle(null)
                 }
             }
         }
@@ -272,6 +299,8 @@ class JoystickOverlayService : Service() {
             setTextColor(Color.parseColor("#BFDBFE"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
             typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            maxLines = 1
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(8).toFloat()
@@ -279,6 +308,7 @@ class JoystickOverlayService : Service() {
                 setStroke(dp(1), Color.parseColor("#663B82F6"))
             }
             setPadding(dp(6), dp(3), dp(6), dp(3))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener {
                 speedMps = RouteManager.nextSpeedPreset(speedMps)
                 RouteManager.setJoystickSpeed(this@JoystickOverlayService, speedMps)
@@ -295,7 +325,7 @@ class JoystickOverlayService : Service() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                marginStart = dp(5)
+                marginStart = dp(6)
             }
             setOnClickListener {
                 toggleDirectionLock()
@@ -303,33 +333,24 @@ class JoystickOverlayService : Service() {
         }
         btnLockDirection = lockBtn
 
-        val headingView = TextView(this).apply {
-            text = "待机"
-            setTextColor(Color.parseColor("#94A3B8"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(5)
-            }
-        }
-        tvHeadingInfo = headingView
-
         footer.addView(speedBtn)
         footer.addView(lockBtn)
-        footer.addView(headingView)
         body.addView(footer)
 
         container.addView(header)
         container.addView(body)
 
         refreshLockButtonUI()
+        refreshHeaderTitle(null)
 
         try {
             wm.addView(container, params)
             rootContainer = container
             isRunning = true
+            notifyRunningState(true)
         } catch (_: Throwable) {
             isRunning = false
+            notifyRunningState(false)
             stopSelf()
         }
     }
@@ -339,7 +360,7 @@ class JoystickOverlayService : Service() {
         joystickPad?.setDirectionLock(isDirectionLockEnabled)
         refreshLockButtonUI()
         if (!joystickActive) {
-            refreshIdleHeadingText()
+            refreshHeaderTitle(null)
         }
     }
 
@@ -366,11 +387,26 @@ class JoystickOverlayService : Service() {
         }
     }
 
-    private fun refreshIdleHeadingText() {
-        tvHeadingInfo?.text = if (isDirectionLockEnabled) "拖锁定" else "待机"
-        tvHeadingInfo?.setTextColor(
-            Color.parseColor(if (isDirectionLockEnabled) "#FCD34D" else "#94A3B8")
-        )
+    private fun refreshHeaderTitle(bearingDeg: Float?) {
+        val locked = isDirectionLockEnabled && (joystickPad?.isDirectionLockedActive == true)
+        when {
+            isCollapsed && locked && joystickActive -> {
+                tvDragHandle?.text = "🔒 巡航"
+                tvDragHandle?.setTextColor(Color.parseColor("#FDE68A"))
+            }
+            bearingDeg != null && locked -> {
+                tvDragHandle?.text = String.format(Locale.US, "🔒 %03.0f°", bearingDeg)
+                tvDragHandle?.setTextColor(Color.parseColor("#FDE68A"))
+            }
+            bearingDeg != null -> {
+                tvDragHandle?.text = String.format(Locale.US, "≡ %03.0f°", bearingDeg)
+                tvDragHandle?.setTextColor(Color.parseColor("#93C5FD"))
+            }
+            else -> {
+                tvDragHandle?.text = "≡ 摇杆"
+                tvDragHandle?.setTextColor(Color.parseColor("#E2E8F0"))
+            }
+        }
     }
 
     private fun toggleCollapse() {
@@ -379,26 +415,29 @@ class JoystickOverlayService : Service() {
         btnCollapse?.text = if (isCollapsed) "▢" else "—"
         if (isCollapsed) {
             if (isDirectionLockEnabled && joystickActive) {
-                // 方向锁定巡航中折叠悬浮窗时保持后台持续移动
-                tvDragHandle?.text = "🔒 巡航"
-                tvDragHandle?.setTextColor(Color.parseColor("#FDE68A"))
+                refreshHeaderTitle(null)
             } else {
                 joystickPad?.resetStick()
                 joystickActive = false
                 mainHandler.removeCallbacks(stepRunnable)
                 MockLocationService.setLiveMotion(0f, 0f, false)
-                tvDragHandle?.text = "≡ 摇杆"
-                tvDragHandle?.setTextColor(Color.parseColor("#E2E8F0"))
+                refreshHeaderTitle(null)
             }
         } else {
-            tvDragHandle?.text = "≡ 摇杆"
-            tvDragHandle?.setTextColor(Color.parseColor("#E2E8F0"))
+            refreshHeaderTitle(null)
         }
     }
 
     private fun performJoystickStep() {
         val cfg = ConfigManager.load(this)
-        val dtSec = STEP_INTERVAL_MS / 1000.0
+        val nowMs = SystemClock.elapsedRealtime()
+        val dtSec = if (lastStepElapsedMs > 0L) {
+            ((nowMs - lastStepElapsedMs).coerceIn(50L, 1000L)) / 1000.0
+        } else {
+            STEP_INTERVAL_MS / 1000.0
+        }
+        lastStepElapsedMs = nowMs
+
         val (newWgsLat, newWgsLng, bearingDeg) = RouteManager.stepByVector(
             cfg.wgsLat,
             cfg.wgsLng,
@@ -424,7 +463,7 @@ class JoystickOverlayService : Service() {
             gcjLng = newGcj.lng,
             address = label
         )
-        MockLocationService.setLiveMotion(speedMps, bearingDeg, true)
+        MockLocationService.pushLiveLocationNow(newWgsLat, newWgsLng, speedMps, bearingDeg)
         MockLocationService.notifyPositionListeners(
             newGcj.lat,
             newGcj.lng,
@@ -434,17 +473,11 @@ class JoystickOverlayService : Service() {
             bearingDeg,
             speedMps
         )
-        tvHeadingInfo?.text = if (locked) {
-            String.format(Locale.US, "🔒%03.0f°", bearingDeg)
-        } else {
-            String.format(Locale.US, "%03.0f°", bearingDeg)
-        }
-        tvHeadingInfo?.setTextColor(
-            Color.parseColor(if (locked) "#FCD34D" else "#93C5FD")
-        )
+        refreshHeaderTitle(bearingDeg)
     }
 
     private fun removeOverlay() {
+        val wasRunning = isRunning
         isRunning = false
         joystickActive = false
         isDirectionLockEnabled = false
@@ -464,7 +497,9 @@ class JoystickOverlayService : Service() {
         tvDragHandle = null
         tvSpeedBadge = null
         btnLockDirection = null
-        tvHeadingInfo = null
         btnCollapse = null
+        if (wasRunning) {
+            notifyRunningState(false)
+        }
     }
 }

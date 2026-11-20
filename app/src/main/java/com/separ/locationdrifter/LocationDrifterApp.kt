@@ -22,12 +22,15 @@ import android.widget.TextView
 import android.widget.Toast
 import com.separ.locationdrifter.data.ConfigManager
 import com.separ.locationdrifter.data.RouteManager
+import com.separ.locationdrifter.service.JoystickOverlayService
+import com.separ.locationdrifter.util.CoordTransform
 import com.separ.locationdrifter.util.RealLocationHelper
+import java.util.Locale
 import java.util.WeakHashMap
 
 /**
  * 全局应用入口：负责初始化自定义速度/海拔配置、夜间模式（跟随系统 / 夜间 / 浅色）、
- * 侧边栏与设置/关于页面挂载、系统栏着色、暗色地图同步、弹窗深色适配及启动自动定位当前位置。
+ * 侧边栏与设置/关于页面挂载、系统栏着色、暗色地图同步、摇杆状态同步及所有弹窗深色适配。
  */
 class LocationDrifterApp : Application() {
 
@@ -71,6 +74,8 @@ class LocationDrifterApp : Application() {
     private val wiredActivities = WeakHashMap<Activity, Boolean>()
     private val adaptedDialogRoots = WeakHashMap<View, Boolean>()
     private val autoLocatedActivities = WeakHashMap<Activity, Boolean>()
+    private val pausedActivities = WeakHashMap<Activity, Boolean>()
+    private val joystickStateListeners = WeakHashMap<Activity, (Boolean) -> Unit>()
 
     override fun onCreate() {
         super.onCreate()
@@ -109,16 +114,28 @@ class LocationDrifterApp : Application() {
                 val dark = isDarkActive(activity, mode)
                 applySystemBars(activity, dark)
                 updateThemeToggleLabel(activity, mode)
+                wireLocateMeButton(activity)
+                wireJoystickStateSync(activity)
+                updateJoystickButtonUi(activity, JoystickOverlayService.isRunning)
                 syncWebMapTheme(activity, dark)
                 tryAutoLocateOnStartup(activity)
+                if (pausedActivities.remove(activity) == true) {
+                    syncLatestCoordsOnResume(activity)
+                }
             }
 
-            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) {
+                pausedActivities[activity] = true
+            }
+
             override fun onActivityStopped(activity: Activity) = Unit
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+
             override fun onActivityDestroyed(activity: Activity) {
                 wiredActivities.remove(activity)
                 autoLocatedActivities.remove(activity)
+                pausedActivities.remove(activity)
+                joystickStateListeners.remove(activity)?.let { JoystickOverlayService.removeRunningStateListener(it) }
             }
         })
     }
@@ -142,11 +159,48 @@ class LocationDrifterApp : Application() {
             getThemeMode = { getSavedThemeMode(activity) },
             onApplyThemeMode = { targetMode -> switchThemeMode(activity, targetMode) }
         )
-        wireLocateMeButton(activity)
         syncWebMapTheme(activity, dark)
-        tryAutoLocateOnStartup(activity)
         if (dark) {
             attachDarkModeAdapter(activity)
+        }
+    }
+
+    private fun wireJoystickStateSync(activity: Activity) {
+        if (joystickStateListeners.containsKey(activity)) return
+        val listener: (Boolean) -> Unit = { running ->
+            updateJoystickButtonUi(activity, running)
+        }
+        joystickStateListeners[activity] = listener
+        JoystickOverlayService.addRunningStateListener(listener)
+    }
+
+    private fun updateJoystickButtonUi(activity: Activity, running: Boolean) {
+        if (activity.isFinishing || activity.isDestroyed) return
+        val btn = activity.findViewById<TextView>(R.id.btnToggleJoystick) ?: return
+        btn.text = if (running) "关闭摇杆" else "悬浮摇杆"
+        btn.setTextColor(
+            activity.getColor(if (running) R.color.accent_red else R.color.accent_blue_text)
+        )
+    }
+
+    private fun syncLatestCoordsOnResume(activity: Activity) {
+        try {
+            val cfg = ConfigManager.load(activity)
+            val bd = CoordTransform.gcj02ToBd09(cfg.gcjLat, cfg.gcjLng)
+            activity.findViewById<TextView>(R.id.tvAddress)?.text = "当前选点: ${cfg.address}"
+            activity.findViewById<TextView>(R.id.tvCoords)?.text = String.format(
+                Locale.US,
+                "GCJ: %.5f, %.5f | WGS: %.5f, %.5f | BD: %.5f, %.5f",
+                cfg.gcjLat, cfg.gcjLng, cfg.wgsLat, cfg.wgsLng, bd.lat, bd.lng
+            )
+            val webMap = activity.findViewById<WebView>(R.id.webMap) ?: return
+            val js = String.format(
+                Locale.US,
+                "window.updateLivePosition && window.updateLivePosition(%.8f, %.8f, true);",
+                cfg.gcjLat, cfg.gcjLng
+            )
+            webMap.evaluateJavascript(js, null)
+        } catch (_: Throwable) {
         }
     }
 
